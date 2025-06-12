@@ -9,6 +9,7 @@ from minlog import logger, Verbosity
 
 from .util import set_option, get_option
 from . import __VERSION__
+from .config import load_config, get_config_path, get_container_runtime
 
 from .containers import (
     PODMAN,
@@ -63,6 +64,19 @@ def app_callback(
         logger.be_debug()
     elif quiet:
         logger.be_quiet()
+    
+    config_path = get_config_path()
+    config_exists = config_path.exists()
+    config = load_config()
+    
+    if not config_exists:
+        runtime = get_container_runtime()
+        logger.info(f"Using container runtime: {runtime}")
+        logger.info(f"Config file created at: {config_path}")
+    else:
+        runtime = get_container_runtime()
+        logger.debug(f"Using container runtime: {runtime}")
+        logger.debug(f"Config loaded from: {config_path}")
 
 
 @app.command(help="build an image from a dockerfile", no_args_is_help=True)

@@ -1,12 +1,29 @@
 import sh
 import json
+from minlog import logger
 
-PODMAN = sh.Command("podman")
+from .config import get_container_runtime
 
-FORMAT_PODMAN_OUTPUT = {
+
+def get_container_command():
+    """Get the configured container runtime command."""
+    runtime = get_container_runtime()
+    try:
+        return sh.Command(runtime)
+    except sh.CommandNotFound:
+        logger.error(f"Container runtime '{runtime}' not found. Please ensure it's installed and in your PATH.")
+        raise
+
+
+CONTAINER_CMD = get_container_command()
+PODMAN = CONTAINER_CMD
+
+FORMAT_CONTAINER_OUTPUT = {
     "_out": lambda line: print(f"  {line}", end=""),
     "_err": lambda line: print(f"  {line}", end=""),
 }
+
+FORMAT_PODMAN_OUTPUT = FORMAT_CONTAINER_OUTPUT
 
 
 def get_containers(only_mim=False):
@@ -14,10 +31,10 @@ def get_containers(only_mim=False):
     if only_mim:
         ps_args.append("--filter")
         ps_args.append("label=mim=1")
-    ps_cmd = PODMAN.bake("ps", *ps_args)
-    podman_containers_json = ps_cmd()
-    podman_containers = json.loads(podman_containers_json)
-    return podman_containers
+    ps_cmd = CONTAINER_CMD.bake("ps", *ps_args)
+    container_json = ps_cmd()
+    containers = json.loads(container_json)
+    return containers
 
 
 def container_exists(container_name):
@@ -47,14 +64,14 @@ def container_is_mim(container_name):
 
 
 def get_images():
-    images_cmd = PODMAN.bake("images", "--format", "json")
-    podman_images_json = images_cmd()
-    podman_images = json.loads(podman_images_json)
-    return podman_images
+    images_cmd = CONTAINER_CMD.bake("images", "--format", "json")
+    images_json = images_cmd()
+    images = json.loads(images_json)
+    return images
 
 
 def image_exists(image_name):
-    image_exists_cmd = PODMAN.bake("image", "exists", image_name)
+    image_exists_cmd = CONTAINER_CMD.bake("image", "exists", image_name)
     try:
         image_exists_cmd()
         return True

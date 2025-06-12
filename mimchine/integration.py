@@ -79,21 +79,23 @@ def get_container_integration_mounts(data_dir) -> List[str]:
     ]
 
 
-# get a path to storable data for this app
 def get_app_data_dir(app_name: str) -> str:
-    if os.name == "posix":
-        if os.uname().sysname == "Darwin":
-            return os.path.join(
-                os.environ["HOME"], f"Library/Application Support/{app_name}"
-            )
-        elif os.uname().sysname == "Linux":
-            return os.path.join(os.environ["HOME"], f".local/share/{app_name}")
+    import platform
+    
+    system = platform.system().lower()
+    
+    if system == "darwin":
+        return os.path.join(os.environ["HOME"], f"Library/Application Support/{app_name}")
+    elif system == "linux":
+        xdg_data = os.environ.get("XDG_DATA_HOME")
+        if xdg_data:
+            return os.path.join(xdg_data, app_name)
         else:
-            raise NotImplementedError(f"unknown posix system: {os.uname().sysname}")
-    elif os.name == "nt":
+            return os.path.join(os.environ["HOME"], f".local/share/{app_name}")
+    elif system == "windows":
         return os.path.join(os.environ["APPDATA"], app_name)
     else:
-        raise NotImplementedError(f"unknown os: {os.name}")
+        raise NotImplementedError(f"unknown system: {system}")
 
 
 def get_home_dir() -> str:
