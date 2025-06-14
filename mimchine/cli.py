@@ -146,6 +146,12 @@ def create(
         "--port-bind",
         help="port to bind from the host to the container.",
     ),
+    custom_mounts: List[str] = typer.Option(
+        [],
+        "-M",
+        "--mount",
+        help="custom mount in format host_path:container_path (e.g., ~/Downloads/claude:/root/Downloads).",
+    ),
     host_pid: bool = typer.Option(
         False,
         "--host-pid",
@@ -230,6 +236,25 @@ def create(
         home_share_src_rel = os.path.relpath(home_share_src_abs, user_home_dir)
         home_share_target = os.path.join(CONTAINER_HOME_DIR, home_share_src_rel)
         container_create_opts.extend(["-v", f"{home_share_src_abs}:{home_share_target}"])
+
+    # process custom mounts
+    for custom_mount in custom_mounts:
+        if ":" not in custom_mount:
+            logger.error(f"invalid mount format [{custom_mount}], expected host_path:container_path")
+            raise typer.Exit(1)
+        
+        host_path, container_path = custom_mount.split(":", 1)
+        
+        # expand user path on host side (e.g., ~/Downloads -> /Users/user/Downloads)
+        host_path_expanded = os.path.abspath(os.path.expanduser(host_path))
+        
+        # validate host path exists
+        if not os.path.exists(host_path_expanded):
+            logger.error(f"custom mount host path [{host_path_expanded}] does not exist")
+            raise typer.Exit(1)
+        
+        logger.debug(f"adding custom mount: {host_path_expanded}:{container_path}")
+        container_create_opts.extend(["-v", f"{host_path_expanded}:{container_path}"])
 
     for port_bind in port_binds:
         container_create_opts.extend(["-p", port_bind])
