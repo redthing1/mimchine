@@ -12,8 +12,8 @@ from . import __VERSION__
 from .config import load_config, get_config_path, get_container_runtime
 
 from .containers import (
-    PODMAN,
-    FORMAT_PODMAN_OUTPUT,
+    CONTAINER_CMD,
+    FORMAT_CONTAINER_OUTPUT,
     get_containers,
     container_exists,
     container_is_running,
@@ -101,14 +101,14 @@ def build(
     ),
 ):
     logger.info(f"building docker image from [{dockerfile}]")
-    build_cmd = PODMAN.bake(
+    build_cmd = CONTAINER_CMD.bake(
         "build",
         "-f",
         dockerfile,
         "-t",
         image_name,
         context_dir,
-        **FORMAT_PODMAN_OUTPUT,
+        **FORMAT_CONTAINER_OUTPUT,
     )
     logger.debug(f"running command: {build_cmd}")
     try:
@@ -173,7 +173,7 @@ def create(
     logger.info(f"creating data directory [{container_data_dir}]")
     os.makedirs(container_data_dir, exist_ok=True)
 
-    podman_create_opts = [
+    container_create_opts = [
         "--name",
         container_name,
         "--label",
@@ -181,13 +181,13 @@ def create(
     ]
 
     if host_pid:
-        podman_create_opts.append("--pid=host")
+        container_create_opts.append("--pid=host")
 
     if privileged:
-        podman_create_opts.append("--privileged")
+        container_create_opts.append("--privileged")
 
     for mount in get_os_integration_mounts():
-        podman_create_opts.extend(["-v", mount])
+        container_create_opts.extend(["-v", mount])
 
     for mount in get_container_integration_mounts(container_data_dir):
         # mount_source, mount_target = mount.split(":")
@@ -207,7 +207,7 @@ def create(
                 # change permissions to 777 so the container can write to it
                 os.chmod(mount.source_path, 0o777)
 
-        podman_create_opts.extend(["-v", f"{mount.source_path}:{mount.container_path}"])
+        container_create_opts.extend(["-v", f"{mount.source_path}:{mount.container_path}"])
 
     user_home_dir = get_home_dir()
     for home_share in home_shares:
@@ -229,24 +229,24 @@ def create(
         home_share_src_abs = os.path.abspath(home_share)
         home_share_src_rel = os.path.relpath(home_share_src_abs, user_home_dir)
         home_share_target = os.path.join(CONTAINER_HOME_DIR, home_share_src_rel)
-        podman_create_opts.extend(["-v", f"{home_share_src_abs}:{home_share_target}"])
+        container_create_opts.extend(["-v", f"{home_share_src_abs}:{home_share_target}"])
 
     for port_bind in port_binds:
-        podman_create_opts.extend(["-p", port_bind])
+        container_create_opts.extend(["-p", port_bind])
 
     integration_home_env = get_os_integration_home_env()
-    podman_create_opts.extend(["-e", integration_home_env])
+    container_create_opts.extend(["-e", integration_home_env])
 
     logger.info(f"creating mim container [{container_name}] from image [{image_name}]")
-    create_cmd = PODMAN.bake(
+    create_cmd = CONTAINER_CMD.bake(
         "create",
-        *podman_create_opts,
+        *container_create_opts,
         image_name,
     )
 
     logger.debug(f"running command: {create_cmd}")
     try:
-        create_cmd(**FORMAT_PODMAN_OUTPUT)
+        create_cmd(**FORMAT_CONTAINER_OUTPUT)
         logger.info(f"container [{container_name}] created")
     except sh.ErrorReturnCode as e:
         logger.error(f"run failed with error code {e.exit_code}")
@@ -278,7 +278,7 @@ def destroy(
 
     if container_is_running(container_name):
         if force:
-            stop_cmd = PODMAN.bake(
+            stop_cmd = CONTAINER_CMD.bake(
                 "stop",
                 "-t",
                 "1",
@@ -302,7 +302,7 @@ def destroy(
         logger.error(f"failed to destroy data directory [{container_data_dir}]")
 
     logger.info(f"destroying mim container [{container_name}]")
-    destroy_cmd = PODMAN.bake(
+    destroy_cmd = CONTAINER_CMD.bake(
         "rm",
         container_name,
     )
@@ -342,7 +342,7 @@ def shell(
 
     if not container_is_running(container_name):
         logger.info(f"container [{container_name}] is not running, starting it")
-        start_cmd = PODMAN.bake(
+        start_cmd = CONTAINER_CMD.bake(
             "start",
             container_name,
         )
@@ -359,7 +359,7 @@ def shell(
         raise typer.Exit(1)
 
     logger.info(f"getting shell in container [{container_name}]")
-    shell_cmd = PODMAN.bake(
+    shell_cmd = CONTAINER_CMD.bake(
         "exec",
         "-it",
         container_name,

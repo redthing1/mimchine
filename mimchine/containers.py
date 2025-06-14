@@ -6,17 +6,17 @@ from .config import get_container_runtime
 
 
 def parse_container_json(json_output):
-    """Parse JSON output that could be either a JSON array or JSONL format."""
+    """parse json output that could be either a json array or jsonl format."""
     if not json_output.strip():
         return []
     
     try:
-        # First try parsing as a single JSON document (could be an array)
+        # first try parsing as a single json document (could be an array)
         result = json.loads(json_output)
-        # If it's not a list, wrap it in one
+        # if it's not a list, wrap it in one
         return result if isinstance(result, list) else [result]
     except json.JSONDecodeError:
-        # If that fails, try parsing as JSONL (newline-separated JSON objects)
+        # if that fails, try parsing as jsonl (newline-separated json objects)
         containers = []
         for line in json_output.strip().split('\n'):
             if line.strip():
@@ -25,7 +25,7 @@ def parse_container_json(json_output):
 
 
 def get_container_command():
-    """Get the configured container runtime command."""
+    """get the configured container runtime command."""
     runtime = get_container_runtime()
     try:
         return sh.Command(runtime)
@@ -35,17 +35,40 @@ def get_container_command():
 
 
 CONTAINER_CMD = get_container_command()
-PODMAN = CONTAINER_CMD
 
 FORMAT_CONTAINER_OUTPUT = {
     "_out": lambda line: print(f"  {line}", end=""),
     "_err": lambda line: print(f"  {line}", end=""),
 }
 
-FORMAT_PODMAN_OUTPUT = FORMAT_CONTAINER_OUTPUT
+
+def _supports_image_exists():
+    """check if the container runtime supports 'image exists' command."""
+    return get_container_runtime() == "podman"
+
+
+def _image_exists_podman(image_name):
+    """check image existence using podman-style 'image exists' command."""
+    try:
+        image_exists_cmd = CONTAINER_CMD.bake("image", "exists", image_name)
+        image_exists_cmd()
+        return True
+    except sh.ErrorReturnCode:
+        return False
+
+
+def _image_exists_docker(image_name):
+    """check image existence using docker-style 'image inspect' command."""
+    try:
+        image_inspect_cmd = CONTAINER_CMD.bake("image", "inspect", image_name)
+        image_inspect_cmd()
+        return True
+    except sh.ErrorReturnCode:
+        return False
 
 
 def get_containers(only_mim=False):
+    """get list of containers, optionally filtered to only mim containers."""
     ps_args = ["-a", "--format", "json"]
     if only_mim:
         ps_args.append("--filter")
@@ -56,16 +79,18 @@ def get_containers(only_mim=False):
 
 
 def container_exists(container_name):
-    podman_containers = get_containers()
-    for container in podman_containers:
+    """check if a container exists by name."""
+    containers = get_containers()
+    for container in containers:
         if container_name in container["Names"]:
             return True
     return False
 
 
 def container_is_running(container_name):
-    podman_containers = get_containers()
-    for container in podman_containers:
+    """check if a container is currently running."""
+    containers = get_containers()
+    for container in containers:
         if container_name in container["Names"]:
             if container["State"] == "running":
                 return True
@@ -73,8 +98,9 @@ def container_is_running(container_name):
 
 
 def container_is_mim(container_name):
-    podman_containers = get_containers()
-    for container in podman_containers:
+    """check if a container is a mim container (has mim=1 label)."""
+    containers = get_containers()
+    for container in containers:
         if container_name in container["Names"]:
             if container["Labels"]["mim"] == "1":
                 return True
@@ -82,15 +108,15 @@ def container_is_mim(container_name):
 
 
 def get_images():
+    """get list of container images."""
     images_cmd = CONTAINER_CMD.bake("images", "--format", "json")
     images_json = images_cmd()
     return parse_container_json(images_json)
 
 
 def image_exists(image_name):
-    image_exists_cmd = CONTAINER_CMD.bake("image", "exists", image_name)
-    try:
-        image_exists_cmd()
-        return True
-    except sh.ErrorReturnCode:
-        return False
+    """check if an image exists using the appropriate method for the container runtime."""
+    if _supports_image_exists():
+        return _image_exists_podman(image_name)
+    else:
+        return _image_exists_docker(image_name)
