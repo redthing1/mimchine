@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "mimchine"
-version = "0.23.0"
+version = "0.24.0"
 description = "well integrated mini machines with rootless podman"
 authors = ["redthing1 <redthing1@alt.icu>"]
 readme = "README.md"
