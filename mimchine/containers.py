@@ -67,6 +67,25 @@ def _image_exists_docker(image_name):
         return False
 
 
+def _parse_container_labels(labels):
+    """parse container labels that could be either a dict (podman) or string (docker)."""
+    if isinstance(labels, dict):
+        # podman format: {"key": "value", "mim": "1"}
+        return labels
+    elif isinstance(labels, str):
+        # docker format: "key=value,mim=1"
+        parsed = {}
+        if labels.strip():
+            for pair in labels.split(','):
+                if '=' in pair:
+                    key, value = pair.split('=', 1)
+                    parsed[key.strip()] = value.strip()
+        return parsed
+    else:
+        # handle null/empty labels
+        return {}
+
+
 def get_containers(only_mim=False):
     """get list of containers, optionally filtered to only mim containers."""
     ps_args = ["-a", "--format", "json"]
@@ -102,7 +121,8 @@ def container_is_mim(container_name):
     containers = get_containers()
     for container in containers:
         if container_name in container["Names"]:
-            if container["Labels"]["mim"] == "1":
+            labels = _parse_container_labels(container["Labels"])
+            if labels.get("mim") == "1":
                 return True
     return False
 
