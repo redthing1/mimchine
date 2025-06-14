@@ -5,6 +5,25 @@ from minlog import logger
 from .config import get_container_runtime
 
 
+def parse_container_json(json_output):
+    """Parse JSON output that could be either a JSON array or JSONL format."""
+    if not json_output.strip():
+        return []
+    
+    try:
+        # First try parsing as a single JSON document (could be an array)
+        result = json.loads(json_output)
+        # If it's not a list, wrap it in one
+        return result if isinstance(result, list) else [result]
+    except json.JSONDecodeError:
+        # If that fails, try parsing as JSONL (newline-separated JSON objects)
+        containers = []
+        for line in json_output.strip().split('\n'):
+            if line.strip():
+                containers.append(json.loads(line))
+        return containers
+
+
 def get_container_command():
     """Get the configured container runtime command."""
     runtime = get_container_runtime()
@@ -33,8 +52,7 @@ def get_containers(only_mim=False):
         ps_args.append("label=mim=1")
     ps_cmd = CONTAINER_CMD.bake("ps", *ps_args)
     container_json = ps_cmd()
-    containers = json.loads(container_json)
-    return containers
+    return parse_container_json(container_json)
 
 
 def container_exists(container_name):
@@ -66,8 +84,7 @@ def container_is_mim(container_name):
 def get_images():
     images_cmd = CONTAINER_CMD.bake("images", "--format", "json")
     images_json = images_cmd()
-    images = json.loads(images_json)
-    return images
+    return parse_container_json(images_json)
 
 
 def image_exists(image_name):
