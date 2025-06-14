@@ -24,9 +24,9 @@ DEFAULT_CONFIG = {
 def get_config_dir() -> Path:
     """Get the platform-appropriate config directory for mimchine."""
     import platform
-    
+
     system = platform.system().lower()
-    
+
     if system == "darwin":
         config_path = Path.home() / ".config" / "mimchine"
     elif system == "linux":
@@ -37,7 +37,7 @@ def get_config_dir() -> Path:
             config_path = Path.home() / ".config" / "mimchine"
     else:
         config_path = Path(user_config_dir("mimchine"))
-    
+
     config_path.mkdir(parents=True, exist_ok=True)
     return config_path
 
@@ -50,12 +50,12 @@ def get_config_path() -> Path:
 def load_config() -> Dict[str, Any]:
     """Load configuration from TOML file, creating default if it doesn't exist."""
     config_path = get_config_path()
-    
+
     if not config_path.exists():
         logger.info(f"Config file not found at {config_path}")
         create_default_config()
         return DEFAULT_CONFIG.copy()
-    
+
     try:
         with open(config_path, "rb") as f:
             config = tomllib.load(f)
@@ -71,10 +71,10 @@ def create_default_config() -> None:
     """Create the default configuration file."""
     config_path = get_config_path()
     config_dir = config_path.parent
-    
+
     # Ensure config directory exists
     config_dir.mkdir(parents=True, exist_ok=True)
-    
+
     try:
         with open(config_path, "wb") as f:
             tomli_w.dump(DEFAULT_CONFIG, f)
@@ -94,17 +94,19 @@ def validate_config(config: Dict[str, Any]) -> bool:
     """Validate configuration structure and values."""
     if not isinstance(config, dict):
         return False
-    
+
     # Check container runtime if specified
     if "container" in config:
         container_config = config["container"]
         if not isinstance(container_config, dict):
             return False
-        
+
         if "runtime" in container_config:
             runtime = container_config["runtime"]
             if runtime not in ["podman", "docker"]:
-                logger.error(f"Invalid container runtime: {runtime}. Must be 'podman' or 'docker'")
+                logger.error(
+                    f"Invalid container runtime: {runtime}. Must be 'podman' or 'docker'"
+                )
                 return False
-    
+
     return True

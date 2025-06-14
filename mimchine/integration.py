@@ -19,11 +19,13 @@ WINDOWS_MOUNTS = [
     f"C:\\Users:{MOUNT_BASE}\\Users",
 ]
 
+
 @dataclass
 class ContainerIntegrationMount:
     source_path: str
     container_path: str
     is_file: bool
+
 
 CONTAINER_INTEGRATION_MOUNTS = [
     # ContainerIntegrationMount("$/.zsh_history", "$/.zsh_history", True),
@@ -32,6 +34,7 @@ CONTAINER_INTEGRATION_MOUNTS = [
 ]
 
 CONTAINER_HOME_DIR = "/root"
+
 
 def get_os_integration_mounts() -> List[str]:
     if os.name == "posix":
@@ -81,11 +84,13 @@ def get_container_integration_mounts(data_dir) -> List[str]:
 
 def get_app_data_dir(app_name: str) -> str:
     import platform
-    
+
     system = platform.system().lower()
-    
+
     if system == "darwin":
-        return os.path.join(os.environ["HOME"], f"Library/Application Support/{app_name}")
+        return os.path.join(
+            os.environ["HOME"], f"Library/Application Support/{app_name}"
+        )
     elif system == "linux":
         xdg_data = os.environ.get("XDG_DATA_HOME")
         if xdg_data:

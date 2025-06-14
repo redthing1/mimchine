@@ -9,7 +9,7 @@ def parse_container_json(json_output):
     """parse json output that could be either a json array or jsonl format."""
     if not json_output.strip():
         return []
-    
+
     try:
         # first try parsing as a single json document (could be an array)
         result = json.loads(json_output)
@@ -18,7 +18,7 @@ def parse_container_json(json_output):
     except json.JSONDecodeError:
         # if that fails, try parsing as jsonl (newline-separated json objects)
         containers = []
-        for line in json_output.strip().split('\n'):
+        for line in json_output.strip().split("\n"):
             if line.strip():
                 containers.append(json.loads(line))
         return containers
@@ -30,7 +30,9 @@ def get_container_command():
     try:
         return sh.Command(runtime)
     except sh.CommandNotFound:
-        logger.error(f"Container runtime '{runtime}' not found. Please ensure it's installed and in your PATH.")
+        logger.error(
+            f"Container runtime '{runtime}' not found. Please ensure it's installed and in your PATH."
+        )
         raise
 
 
@@ -76,9 +78,9 @@ def _parse_container_labels(labels):
         # docker format: "key=value,mim=1"
         parsed = {}
         if labels.strip():
-            for pair in labels.split(','):
-                if '=' in pair:
-                    key, value = pair.split('=', 1)
+            for pair in labels.split(","):
+                if "=" in pair:
+                    key, value = pair.split("=", 1)
                     parsed[key.strip()] = value.strip()
         return parsed
     else:

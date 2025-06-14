@@ -64,11 +64,11 @@ def app_callback(
         logger.be_debug()
     elif quiet:
         logger.be_quiet()
-    
+
     config_path = get_config_path()
     config_exists = config_path.exists()
     config = load_config()
-    
+
     if not config_exists:
         runtime = get_container_runtime()
         logger.info(f"Using container runtime: {runtime}")
@@ -213,7 +213,9 @@ def create(
                 # change permissions to 777 so the container can write to it
                 os.chmod(mount.source_path, 0o777)
 
-        container_create_opts.extend(["-v", f"{mount.source_path}:{mount.container_path}"])
+        container_create_opts.extend(
+            ["-v", f"{mount.source_path}:{mount.container_path}"]
+        )
 
     user_home_dir = get_home_dir()
     for home_share in home_shares:
@@ -235,24 +237,30 @@ def create(
         home_share_src_abs = os.path.abspath(home_share)
         home_share_src_rel = os.path.relpath(home_share_src_abs, user_home_dir)
         home_share_target = os.path.join(CONTAINER_HOME_DIR, home_share_src_rel)
-        container_create_opts.extend(["-v", f"{home_share_src_abs}:{home_share_target}"])
+        container_create_opts.extend(
+            ["-v", f"{home_share_src_abs}:{home_share_target}"]
+        )
 
     # process custom mounts
     for custom_mount in custom_mounts:
         if ":" not in custom_mount:
-            logger.error(f"invalid mount format [{custom_mount}], expected host_path:container_path")
+            logger.error(
+                f"invalid mount format [{custom_mount}], expected host_path:container_path"
+            )
             raise typer.Exit(1)
-        
+
         host_path, container_path = custom_mount.split(":", 1)
-        
+
         # expand user path on host side (e.g., ~/Downloads -> /Users/user/Downloads)
         host_path_expanded = os.path.abspath(os.path.expanduser(host_path))
-        
+
         # validate host path exists
         if not os.path.exists(host_path_expanded):
-            logger.error(f"custom mount host path [{host_path_expanded}] does not exist")
+            logger.error(
+                f"custom mount host path [{host_path_expanded}] does not exist"
+            )
             raise typer.Exit(1)
-        
+
         logger.debug(f"adding custom mount: {host_path_expanded}:{container_path}")
         container_create_opts.extend(["-v", f"{host_path_expanded}:{container_path}"])
 
