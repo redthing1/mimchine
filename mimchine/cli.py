@@ -99,15 +99,40 @@ def build(
         "--context-dir",
         help="path to context directory for the docker build.",
     ),
+    platform: Optional[str] = typer.Option(
+        None,
+        "--platform",
+        help="set target platform for build.",
+    ),
+    build_args: List[str] = typer.Option(
+        [],
+        "--build-arg",
+        help="set build-time variables.",
+    ),
 ):
     logger.info(f"building docker image from [{dockerfile}]")
-    build_cmd = CONTAINER_CMD.bake(
+
+    build_cmd_args = [
         "build",
         "-f",
         dockerfile,
         "-t",
         image_name,
-        context_dir,
+    ]
+
+    # Add platform option if specified
+    if platform:
+        build_cmd_args.extend(["--platform", platform])
+
+    # Add build args if specified
+    for build_arg in build_args:
+        build_cmd_args.extend(["--build-arg", build_arg])
+
+    # Add context directory
+    build_cmd_args.append(context_dir)
+
+    build_cmd = CONTAINER_CMD.bake(
+        *build_cmd_args,
         **FORMAT_CONTAINER_OUTPUT,
     )
     logger.debug(f"running command: {build_cmd}")
