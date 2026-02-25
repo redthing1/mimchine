@@ -3,7 +3,7 @@ name = "mimchine"
 version = "0.25.0"
 description = "well integrated mini machines with rootless podman"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 authors = [
     { name = "redthing1", email = "redthing1@alt.icu" },
 ]
@@ -12,8 +12,6 @@ dependencies = [
     "platformdirs>=4.2.0,<5.0.0",
     "sh>=2.2.2,<3.0.0",
     "single-source>=0.4.0",
-    "tomli-w>=1.0.0,<2.0.0",
-    "tomli>=2.0.1,<3.0.0; python_version < '3.11'",
     "typer>=0.15.2,<0.16.0",
 ]
 
