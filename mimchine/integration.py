@@ -1,4 +1,5 @@
 import os
+import posixpath
 from typing import List
 from dataclasses import dataclass
 
@@ -80,6 +81,40 @@ def get_container_integration_mounts(data_dir) -> List[str]:
         )
         for x in CONTAINER_INTEGRATION_MOUNTS
     ]
+
+
+def map_host_path_to_container(host_path: str, mounts) -> str | None:
+    host_path = os.path.realpath(os.path.abspath(os.path.expanduser(host_path)))
+
+    best_source = None
+    best_destination = None
+    for mount in mounts:
+        source = mount.get("source")
+        destination = mount.get("destination")
+        if not source or not destination:
+            continue
+
+        source = os.path.realpath(os.path.abspath(source))
+        try:
+            common_path = os.path.commonpath([host_path, source])
+        except ValueError:
+            continue
+
+        if common_path != source:
+            continue
+
+        if best_source is None or len(source) > len(best_source):
+            best_source = source
+            best_destination = destination
+
+    if best_source is None or best_destination is None:
+        return None
+
+    rel_path = os.path.relpath(host_path, best_source)
+    if rel_path == ".":
+        return best_destination
+
+    return posixpath.join(best_destination, rel_path.replace("\\", "/"))
 
 
 def get_app_data_dir(app_name: str) -> str:

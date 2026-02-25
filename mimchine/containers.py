@@ -130,6 +130,29 @@ def get_containers(only_mim=False):
     return parse_container_json(container_json)
 
 
+def get_container_mounts(container_name):
+    inspect_cmd = CONTAINER_CMD.bake("inspect", container_name)
+    inspect_json = inspect_cmd()
+    inspect_data = parse_container_json(inspect_json)
+    if len(inspect_data) == 0:
+        return []
+
+    mounts = inspect_data[0].get("Mounts", [])
+    parsed_mounts = []
+    for mount in mounts:
+        source = mount.get("Source") or mount.get("source")
+        destination = mount.get("Destination") or mount.get("destination")
+        if source and destination:
+            parsed_mounts.append(
+                {
+                    "source": source,
+                    "destination": destination,
+                }
+            )
+
+    return parsed_mounts
+
+
 def container_exists(container_name):
     """check if a container exists by name."""
     return _get_container_by_name(container_name) is not None

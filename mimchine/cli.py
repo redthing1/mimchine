@@ -13,6 +13,7 @@ from .containers import (
     CONTAINER_CMD,
     FORMAT_CONTAINER_OUTPUT,
     get_containers,
+    get_container_mounts,
     container_exists,
     container_is_running,
     container_is_mim,
@@ -25,6 +26,7 @@ from .integration import (
     get_os_integration_home_env,
     get_home_dir,
     get_app_data_dir,
+    map_host_path_to_container,
     CONTAINER_HOME_DIR,
 )
 
@@ -406,12 +408,22 @@ def shell(
         )
         raise typer.Exit(1)
 
+    host_cwd = os.getcwd()
+    container_mounts = get_container_mounts(container_name)
+    container_cwd = map_host_path_to_container(host_cwd, container_mounts)
+
     logger.info(f"getting shell in container [{container_name}]")
+    shell_args = ["exec", "-it"]
+    if container_cwd is not None:
+        logger.debug(f"mapped cwd [{host_cwd}] -> [{container_cwd}]")
+        shell_args.extend(["-w", container_cwd])
+    else:
+        logger.debug(f"cwd [{host_cwd}] is not under mounted paths")
+
+    shell_args.extend([container_name, shell])
+
     _run_container_cmd(
-        "exec",
-        "-it",
-        container_name,
-        shell,
+        *shell_args,
         error_action="shell",
         foreground=True,
     )
