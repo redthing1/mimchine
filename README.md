@@ -28,26 +28,32 @@ podman machine stop && ulimit -n unlimited && podman machine start
 
 ## usage
 
+### sync project environment
+
+```sh
+uv sync
+```
+
 ### build a mimchine image
 
 ```sh
-mimchine build -f ./demo/mim_fed.docker -n mim_fed
+uv run mimchine build -f ./demo/mim_fed.docker -n mim_fed
 ```
 
 ### create a mimchine
 
 ```sh
-mimchine create -n mim_fed -H ~/Downloads
+uv run mimchine create -n mim_fed -H ~/Downloads
 ```
 
 ### open a shell in a mimchine
 
 ```sh
-mimchine shell -c mim_fed
+uv run mimchine shell -c mim_fed
 ```
 
 ### destroy a mimchine
 
 ```sh
-mimchine destroy -c mim_fed -f
+uv run mimchine destroy -c mim_fed -f
 ```
