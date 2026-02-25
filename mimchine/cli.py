@@ -21,9 +21,9 @@ from .containers import (
     image_exists,
 )
 from .integration import (
-    get_os_integration_mounts,
     get_container_integration_mounts,
-    get_os_integration_home_env,
+    get_home_integration_mount,
+    get_home_integration_env,
     get_home_dir,
     get_app_data_dir,
     map_host_path_to_container,
@@ -227,6 +227,11 @@ def create(
         "--keepalive-command",
         help="command to run as pid 1 so the machine stays alive.",
     ),
+    integrate_home: bool = typer.Option(
+        False,
+        "--integrate-home",
+        help="mount full host home under /mim/home/<user> and set HOST_HOME.",
+    ),
 ):
     if container_name is None:
         container_name = image_name
@@ -258,8 +263,9 @@ def create(
     if privileged:
         container_create_opts.append("--privileged")
 
-    for mount in get_os_integration_mounts():
-        container_create_opts.extend(["-v", mount])
+    if integrate_home:
+        container_create_opts.extend(["-v", get_home_integration_mount()])
+        container_create_opts.extend(["-e", get_home_integration_env()])
 
     for mount in get_container_integration_mounts(container_data_dir):
         # mount_source, mount_target = mount.split(":")
@@ -332,9 +338,6 @@ def create(
 
     for port_bind in port_binds:
         container_create_opts.extend(["-p", port_bind])
-
-    integration_home_env = get_os_integration_home_env()
-    container_create_opts.extend(["-e", integration_home_env])
 
     keepalive_args = shlex.split(keepalive_command)
     if len(keepalive_args) == 0:
@@ -450,7 +453,10 @@ def shell(
         logger.debug(f"mapped cwd [{host_cwd}] -> [{container_cwd}]")
         shell_args.extend(["-w", container_cwd])
     else:
-        logger.debug(f"cwd [{host_cwd}] is not under mounted paths")
+        logger.debug(
+            f"cwd [{host_cwd}] is not under mounted paths, using [{CONTAINER_HOME_DIR}]"
+        )
+        shell_args.extend(["-w", CONTAINER_HOME_DIR])
 
     shell_args.append(container_name)
     shell_args.extend(shell_command_args)

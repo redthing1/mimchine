@@ -3,24 +3,6 @@ import posixpath
 from typing import List
 from dataclasses import dataclass
 
-# docker mounts from each host system to the container
-
-MOUNT_BASE = "/mim"
-
-MACOS_MOUNTS = [
-    f"/Users:{MOUNT_BASE}/Users",
-    f"/Volumes:{MOUNT_BASE}/Volumes",
-]
-
-LINUX_MOUNTS = [
-    f"/home:{MOUNT_BASE}/home",
-]
-
-WINDOWS_MOUNTS = [
-    f"C:\\Users:{MOUNT_BASE}\\Users",
-]
-
-
 @dataclass
 class ContainerIntegrationMount:
     source_path: str
@@ -35,41 +17,7 @@ CONTAINER_INTEGRATION_MOUNTS = [
 ]
 
 CONTAINER_HOME_DIR = "/root"
-
-
-def get_os_integration_mounts() -> List[str]:
-    if os.name == "posix":
-        if os.uname().sysname == "Darwin":
-            return MACOS_MOUNTS
-        elif os.uname().sysname == "Linux":
-            return LINUX_MOUNTS
-        else:
-            raise NotImplementedError(f"unknown posix system: {os.uname().sysname}")
-    elif os.name == "nt":
-        return WINDOWS_MOUNTS
-    else:
-        raise NotImplementedError(f"unknown os: {os.name}")
-
-
-def get_os_integration_home_env() -> str:
-    home_dir = get_home_dir()
-    current_user = get_current_user()
-    container_home_dir = None
-
-    if os.name == "posix":
-        if os.uname().sysname == "Darwin":
-            container_home_dir = f"{MOUNT_BASE}/Users/{current_user}"
-        elif os.uname().sysname == "Linux":
-            container_home_dir = f"{MOUNT_BASE}/home/{current_user}"
-        else:
-            raise NotImplementedError(f"unknown posix system: {os.uname().sysname}")
-    elif os.name == "nt":
-        container_home_dir = f"{MOUNT_BASE}/Users/{current_user}"
-    else:
-        raise NotImplementedError(f"unknown os: {os.name}")
-
-    home_env = f"HOST_HOME={container_home_dir}"
-    return home_env
+CONTAINER_HOST_HOME_BASE = "/mim/home"
 
 
 def get_container_integration_mounts(data_dir) -> List[str]:
@@ -81,6 +29,20 @@ def get_container_integration_mounts(data_dir) -> List[str]:
         )
         for x in CONTAINER_INTEGRATION_MOUNTS
     ]
+
+
+def get_home_integration_mount() -> str:
+    host_home = os.path.realpath(os.path.abspath(os.path.expanduser(get_home_dir())))
+    home_name = os.path.basename(host_home.rstrip(os.sep))
+    container_home = posixpath.join(CONTAINER_HOST_HOME_BASE, home_name)
+    return f"{host_home}:{container_home}"
+
+
+def get_home_integration_env() -> str:
+    host_home = os.path.realpath(os.path.abspath(os.path.expanduser(get_home_dir())))
+    home_name = os.path.basename(host_home.rstrip(os.sep))
+    container_home = posixpath.join(CONTAINER_HOST_HOME_BASE, home_name)
+    return f"HOST_HOME={container_home}"
 
 
 def map_host_path_to_container(host_path: str, mounts) -> str | None:
@@ -148,19 +110,5 @@ def get_home_dir() -> str:
             raise NotImplementedError(f"unknown posix system: {os.uname().sysname}")
     elif os.name == "nt":
         return os.environ["USERPROFILE"]
-    else:
-        raise NotImplementedError(f"unknown os: {os.name}")
-
-
-def get_current_user() -> str:
-    if os.name == "posix":
-        if os.uname().sysname == "Darwin":
-            return os.environ["USER"]
-        elif os.uname().sysname == "Linux":
-            return os.environ["USER"]
-        else:
-            raise NotImplementedError(f"unknown posix system: {os.uname().sysname}")
-    elif os.name == "nt":
-        return os.environ["USERNAME"]
     else:
         raise NotImplementedError(f"unknown os: {os.name}")
