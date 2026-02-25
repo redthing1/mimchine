@@ -1,17 +1,11 @@
 import os
-import sys
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from platformdirs import user_config_dir
 from minlog import logger
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
-
-import tomli_w
+import tomllib
 
 
 DEFAULT_CONFIG = {
@@ -19,6 +13,7 @@ DEFAULT_CONFIG = {
         "runtime": "podman",
     }
 }
+DEFAULT_CONFIG_TOML = '[container]\nruntime = "podman"\n'
 
 
 def get_config_dir() -> Path:
@@ -76,8 +71,7 @@ def create_default_config() -> None:
     config_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        with open(config_path, "wb") as f:
-            tomli_w.dump(DEFAULT_CONFIG, f)
+        config_path.write_text(DEFAULT_CONFIG_TOML, encoding="utf-8")
         logger.info(f"Created default config file at {config_path}")
         logger.info("You can edit this file to customize mimchine's behavior")
     except Exception as e:
