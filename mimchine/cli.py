@@ -36,8 +36,7 @@ from .shell_helpers import (
     is_zsh_command,
     get_shell_home_dir,
     get_non_root_shell_identity_args,
-    resolve_non_root_shell_home,
-    ensure_non_root_zshrc,
+    prepare_non_root_zsh_shell,
     normalize_host_path,
 )
 
@@ -428,22 +427,20 @@ def shell(
     if len(shell_command_args) == 0:
         logger.error("shell command cannot be empty")
         raise typer.Exit(1)
+    shell_is_zsh = is_zsh_command(shell_command_args)
+    shell_env: list[tuple[str, str]] = []
 
-    if is_zsh_command(shell_command_args):
+    if shell_is_zsh:
         if not container_has_command(container_name, "zsh"):
             logger.error(f"container [{container_name}] does not have zsh installed")
             raise typer.Exit(1)
         if not as_root:
-            shell_home_dir = resolve_non_root_shell_home(
+            shell_home_dir, zsh_env = prepare_non_root_zsh_shell(
                 container_name,
                 runtime,
                 shell_home_dir,
             )
-            ensure_non_root_zshrc(
-                container_name,
-                runtime,
-                shell_home_dir,
-            )
+            shell_env.extend(zsh_env)
 
     logger.info(f"getting shell in container [{container_name}]")
     shell_args = ["exec", "-it"]
@@ -454,6 +451,8 @@ def shell(
     else:
         shell_args.extend(get_non_root_shell_identity_args(runtime))
         shell_args.extend(["-e", f"HOME={shell_home_dir}"])
+        for key, value in shell_env:
+            shell_args.extend(["-e", f"{key}={value}"])
 
     if container_cwd is not None:
         logger.debug(f"mapped cwd [{host_cwd}] -> [{container_cwd}]")

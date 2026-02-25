@@ -50,17 +50,32 @@ def get_non_root_shell_identity_args(runtime: str) -> list[str]:
     return []
 
 
+def get_non_root_zsh_dot_dir() -> str:
+    return f"/tmp/mimchine-zsh-{os.getuid()}"
+
+
+def _format_exec_env_args(env_items: list[tuple[str, str]]) -> list[str]:
+    env_args = []
+    for key, value in env_items:
+        env_args.extend(["-e", f"{key}={value}"])
+    return env_args
+
+
 def run_non_root_shell_script(
     container_name: str,
     runtime: str,
     shell_home_dir: str,
     script: str,
+    extra_env: list[tuple[str, str]] | None = None,
 ) -> str:
+    env_items = [("HOME", shell_home_dir)]
+    if extra_env:
+        env_items.extend(extra_env)
+
     cmd = CONTAINER_CMD.bake(
         "exec",
         *get_non_root_shell_identity_args(runtime),
-        "-e",
-        f"HOME={shell_home_dir}",
+        *_format_exec_env_args(env_items),
         container_name,
         "sh",
         "-lc",
@@ -105,14 +120,15 @@ printf "%s\\n" "$HOME"
         return shell_home_dir
 
 
-def ensure_non_root_zshrc(
+def ensure_non_root_zsh_dot_dir(
     container_name: str,
     runtime: str,
     shell_home_dir: str,
+    zsh_dot_dir: str,
 ) -> None:
     script = """
-mkdir -p "$HOME"
-[ -f "$HOME/.zshrc" ] || : > "$HOME/.zshrc"
+mkdir -p "$ZDOTDIR"
+[ -f "$ZDOTDIR/.zshrc" ] || : > "$ZDOTDIR/.zshrc"
 """
     try:
         run_non_root_shell_script(
@@ -120,11 +136,32 @@ mkdir -p "$HOME"
             runtime,
             shell_home_dir,
             script,
+            extra_env=[("ZDOTDIR", zsh_dot_dir)],
         )
     except sh.ErrorReturnCode as exc:
         logger.debug(
-            f"could not ensure zshrc in [{shell_home_dir}] (code {exc.exit_code}), continuing"
+            f"could not ensure zshrc in [{zsh_dot_dir}] (code {exc.exit_code}), continuing"
         )
+
+
+def prepare_non_root_zsh_shell(
+    container_name: str,
+    runtime: str,
+    shell_home_dir: str,
+) -> tuple[str, list[tuple[str, str]]]:
+    shell_home_dir = resolve_non_root_shell_home(
+        container_name,
+        runtime,
+        shell_home_dir,
+    )
+    zsh_dot_dir = get_non_root_zsh_dot_dir()
+    ensure_non_root_zsh_dot_dir(
+        container_name,
+        runtime,
+        shell_home_dir,
+        zsh_dot_dir,
+    )
+    return shell_home_dir, [("ZDOTDIR", zsh_dot_dir)]
 
 
 def normalize_host_path(path: str) -> str:
