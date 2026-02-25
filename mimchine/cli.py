@@ -1,15 +1,13 @@
 import os
-import time
+import shlex
 import shutil
-from typing import List, Optional, Any, Dict
+from typing import List, Optional
 
 import typer
 import sh
-from minlog import logger, Verbosity
+from minlog import logger
 
-from .util import set_option, get_option
 from . import __VERSION__
-from .config import load_config, get_config_path, get_container_runtime
 
 from .containers import (
     CONTAINER_CMD,
@@ -18,7 +16,7 @@ from .containers import (
     container_exists,
     container_is_running,
     container_is_mim,
-    get_images,
+    get_container_display_name,
     image_exists,
 )
 from .integration import (
@@ -46,7 +44,7 @@ DATA_DIR = get_app_data_dir(APP_NAME)
 
 def version_callback(value: bool):
     if value:
-        logger.error(f"{APP_NAME} v{__VERSION__}")
+        logger.info(f"{APP_NAME} v{__VERSION__}")
         raise typer.Exit()
 
 
@@ -55,7 +53,7 @@ def app_callback(
     verbose: List[bool] = typer.Option([], "--verbose", "-v", help="Verbose output"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Quiet output"),
     version: Optional[bool] = typer.Option(
-        None, "--version", "-V", callback=version_callback
+        None, "--version", "-V", callback=version_callback, is_eager=True
     ),
 ):
     if len(verbose) == 1:
@@ -64,19 +62,6 @@ def app_callback(
         logger.be_debug()
     elif quiet:
         logger.be_quiet()
-
-    config_path = get_config_path()
-    config_exists = config_path.exists()
-    config = load_config()
-
-    if not config_exists:
-        runtime = get_container_runtime()
-        logger.info(f"Using container runtime: {runtime}")
-        logger.info(f"Config file created at: {config_path}")
-    else:
-        runtime = get_container_runtime()
-        logger.debug(f"Using container runtime: {runtime}")
-        logger.debug(f"Config loaded from: {config_path}")
 
 
 @app.command(help="build an image from a dockerfile", no_args_is_help=True)
@@ -187,6 +172,11 @@ def create(
         "--privileged",
         help="run the container in privileged mode.",
     ),
+    keepalive_command: str = typer.Option(
+        "sleep infinity",
+        "--keepalive-command",
+        help="command to run as pid 1 so the machine stays alive.",
+    ),
 ):
     if container_name is None:
         container_name = image_name
@@ -207,6 +197,7 @@ def create(
     container_create_opts = [
         "--name",
         container_name,
+        "--init",
         "--label",
         f"mim=1",
     ]
@@ -295,11 +286,17 @@ def create(
     integration_home_env = get_os_integration_home_env()
     container_create_opts.extend(["-e", integration_home_env])
 
+    keepalive_args = shlex.split(keepalive_command)
+    if len(keepalive_args) == 0:
+        logger.error("keepalive command cannot be empty")
+        raise typer.Exit(1)
+
     logger.info(f"creating mim container [{container_name}] from image [{image_name}]")
     create_cmd = CONTAINER_CMD.bake(
         "create",
         *container_create_opts,
         image_name,
+        *keepalive_args,
     )
 
     logger.debug(f"running command: {create_cmd}")
@@ -357,7 +354,7 @@ def destroy(
     try:
         shutil.rmtree(container_data_dir)
     except FileNotFoundError:
-        logger.error(f"failed to destroy data directory [{container_data_dir}]")
+        logger.debug(f"data directory [{container_data_dir}] already absent")
 
     logger.info(f"destroying mim container [{container_name}]")
     destroy_cmd = CONTAINER_CMD.bake(
@@ -413,7 +410,9 @@ def shell(
             raise typer.Exit(1)
 
     if not container_is_running(container_name):
-        logger.error(f"container [{container_name}] could not be started")
+        logger.error(
+            f"container [{container_name}] could not be started (startup command exited)"
+        )
         raise typer.Exit(1)
 
     logger.info(f"getting shell in container [{container_name}]")
@@ -523,12 +522,8 @@ def list():
 
     logger.info(f"mim containers[{len(containers)}]:")
     for container in containers:
-        # logger.info(f"container [{container}]")
-        container_name = container["Names"][0]
+        container_name = get_container_display_name(container)
         container_state = container["State"]
-        container_is_running = container["State"] == "running"
-        # logger.info(f"container [{container_name}]")
-        # logger.info(f"  running: {container_is_running}")
 
         logger.info(
             f"  [{container_name}] ({container_state})",
