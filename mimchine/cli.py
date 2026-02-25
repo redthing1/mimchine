@@ -112,9 +112,6 @@ def _get_shell_home_dir(container_name: str, as_root: bool) -> str:
         return CONTAINER_HOME_DIR
 
     container_env = get_container_env(container_name)
-    host_home = container_env.get("HOST_HOME")
-    if host_home:
-        return host_home
 
     container_home = container_env.get("HOME")
     if container_home:
