@@ -15,7 +15,6 @@ from .containers import (
     CONTAINER_CMD,
     FORMAT_CONTAINER_OUTPUT,
     get_containers,
-    get_container_env,
     get_container_mounts,
     container_exists,
     container_is_running,
@@ -31,7 +30,15 @@ from .integration import (
     get_home_dir,
     get_app_data_dir,
     map_host_path_to_container,
-    CONTAINER_HOME_DIR,
+)
+from .shell_helpers import (
+    container_has_command,
+    is_zsh_command,
+    get_shell_home_dir,
+    get_non_root_shell_identity_args,
+    resolve_non_root_shell_home,
+    ensure_non_root_zshrc,
+    normalize_host_path,
 )
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
@@ -82,46 +89,6 @@ def _run_container_cmd(
     except sh.ErrorReturnCode as e:
         logger.error(f"{error_action} failed with error code {e.exit_code}")
         raise typer.Exit(1)
-
-
-def _container_has_command(container_name: str, command_name: str) -> bool:
-    check_cmd = CONTAINER_CMD.bake(
-        "exec",
-        container_name,
-        "sh",
-        "-lc",
-        f"command -v {shlex.quote(command_name)} >/dev/null 2>&1",
-    )
-    logger.debug(f"running command: {check_cmd}")
-    try:
-        check_cmd()
-        return True
-    except sh.ErrorReturnCode:
-        return False
-
-
-def _is_zsh_command(command_args: List[str]) -> bool:
-    if len(command_args) == 0:
-        return False
-
-    return os.path.basename(command_args[0]) == "zsh"
-
-
-def _get_shell_home_dir(container_name: str, as_root: bool) -> str:
-    if as_root:
-        return CONTAINER_HOME_DIR
-
-    container_env = get_container_env(container_name)
-
-    container_home = container_env.get("HOME")
-    if container_home:
-        return container_home
-
-    return "/tmp"
-
-
-def _normalize_host_path(path: str) -> str:
-    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
 
 
 @app.callback()
@@ -300,10 +267,10 @@ def create(
             ["-v", f"{mount.source_path}:{mount.container_path}"]
         )
 
-    user_home_dir = _normalize_host_path(get_home_dir())
+    user_home_dir = normalize_host_path(get_home_dir())
     container_host_home = get_container_host_home_dir()
     for home_share in home_shares:
-        home_share = _normalize_host_path(home_share)
+        home_share = normalize_host_path(home_share)
 
         if not os.path.exists(home_share):
             logger.warning(f"home share [{home_share}] does not exist, skipping")
@@ -315,7 +282,7 @@ def create(
             )
             continue
 
-        home_share_src_abs = _normalize_host_path(home_share)
+        home_share_src_abs = normalize_host_path(home_share)
         home_share_src_rel = os.path.relpath(home_share_src_abs, user_home_dir)
 
         if home_share_src_rel == ".":
@@ -338,7 +305,7 @@ def create(
 
         host_path, container_path = custom_mount.split(":", 1)
 
-        host_path_expanded = _normalize_host_path(host_path)
+        host_path_expanded = normalize_host_path(host_path)
 
         if not os.path.exists(host_path_expanded):
             logger.error(
@@ -455,16 +422,28 @@ def shell(
     host_cwd = os.getcwd()
     container_mounts = get_container_mounts(container_name)
     container_cwd = map_host_path_to_container(host_cwd, container_mounts)
-    shell_home_dir = _get_shell_home_dir(container_name, as_root)
+    runtime = get_container_runtime()
+    shell_home_dir = get_shell_home_dir(container_name, as_root)
     shell_command_args = shlex.split(shell)
     if len(shell_command_args) == 0:
         logger.error("shell command cannot be empty")
         raise typer.Exit(1)
 
-    if _is_zsh_command(shell_command_args):
-        if not _container_has_command(container_name, "zsh"):
+    if is_zsh_command(shell_command_args):
+        if not container_has_command(container_name, "zsh"):
             logger.error(f"container [{container_name}] does not have zsh installed")
             raise typer.Exit(1)
+        if not as_root:
+            shell_home_dir = resolve_non_root_shell_home(
+                container_name,
+                runtime,
+                shell_home_dir,
+            )
+            ensure_non_root_zshrc(
+                container_name,
+                runtime,
+                shell_home_dir,
+            )
 
     logger.info(f"getting shell in container [{container_name}]")
     shell_args = ["exec", "-it"]
@@ -473,9 +452,7 @@ def shell(
         logger.debug("running shell as root")
         shell_args.extend(["--user", "0:0"])
     else:
-        host_uid = os.getuid()
-        host_gid = os.getgid()
-        shell_args.extend(["--user", f"{host_uid}:{host_gid}"])
+        shell_args.extend(get_non_root_shell_identity_args(runtime))
         shell_args.extend(["-e", f"HOME={shell_home_dir}"])
 
     if container_cwd is not None:
