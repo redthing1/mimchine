@@ -36,7 +36,12 @@ def get_container_command():
         raise
 
 
-CONTAINER_CMD = get_container_command()
+class _LazyContainerCommand:
+    def bake(self, *args, **kwargs):
+        return get_container_command().bake(*args, **kwargs)
+
+
+CONTAINER_CMD = _LazyContainerCommand()
 
 FORMAT_CONTAINER_OUTPUT = {
     "_out": lambda line: print(f"  {line}", end=""),
@@ -88,6 +93,32 @@ def _parse_container_labels(labels):
         return {}
 
 
+def _parse_container_names(names):
+    if isinstance(names, list):
+        return [str(name).lstrip("/") for name in names if str(name).strip()]
+
+    if isinstance(names, str):
+        return [name.strip().lstrip("/") for name in names.split(",") if name.strip()]
+
+    return []
+
+
+def _get_container_by_name(container_name):
+    for container in get_containers():
+        names = _parse_container_names(container.get("Names"))
+        if container_name in names:
+            return container
+    return None
+
+
+def get_container_display_name(container):
+    names = _parse_container_names(container.get("Names"))
+    if names:
+        return names[0]
+
+    return container.get("Id", "<unknown>")
+
+
 def get_containers(only_mim=False):
     """get list of containers, optionally filtered to only mim containers."""
     ps_args = ["-a", "--format", "json"]
@@ -101,32 +132,26 @@ def get_containers(only_mim=False):
 
 def container_exists(container_name):
     """check if a container exists by name."""
-    containers = get_containers()
-    for container in containers:
-        if container_name in container["Names"]:
-            return True
-    return False
+    return _get_container_by_name(container_name) is not None
 
 
 def container_is_running(container_name):
     """check if a container is currently running."""
-    containers = get_containers()
-    for container in containers:
-        if container_name in container["Names"]:
-            if container["State"] == "running":
-                return True
-    return False
+    container = _get_container_by_name(container_name)
+    if container is None:
+        return False
+
+    return container.get("State") == "running"
 
 
 def container_is_mim(container_name):
     """check if a container is a mim container (has mim=1 label)."""
-    containers = get_containers()
-    for container in containers:
-        if container_name in container["Names"]:
-            labels = _parse_container_labels(container["Labels"])
-            if labels.get("mim") == "1":
-                return True
-    return False
+    container = _get_container_by_name(container_name)
+    if container is None:
+        return False
+
+    labels = _parse_container_labels(container.get("Labels"))
+    return labels.get("mim") == "1"
 
 
 def get_images():
