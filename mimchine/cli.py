@@ -1,6 +1,5 @@
 import os
 import posixpath
-import pwd
 import shlex
 import shutil
 from typing import List, Optional
@@ -108,13 +107,6 @@ def _is_zsh_command(command_args: List[str]) -> bool:
     return os.path.basename(command_args[0]) == "zsh"
 
 
-def _get_host_user_name() -> str:
-    try:
-        return pwd.getpwuid(os.getuid()).pw_name
-    except KeyError:
-        return os.environ.get("USER", "user")
-
-
 def _get_shell_home_dir(container_name: str, as_root: bool) -> str:
     if as_root:
         return CONTAINER_HOME_DIR
@@ -123,6 +115,10 @@ def _get_shell_home_dir(container_name: str, as_root: bool) -> str:
     host_home = container_env.get("HOST_HOME")
     if host_home:
         return host_home
+
+    container_home = container_env.get("HOME")
+    if container_home:
+        return container_home
 
     return "/tmp"
 
@@ -482,11 +478,8 @@ def shell(
     else:
         host_uid = os.getuid()
         host_gid = os.getgid()
-        host_user = _get_host_user_name()
         shell_args.extend(["--user", f"{host_uid}:{host_gid}"])
         shell_args.extend(["-e", f"HOME={shell_home_dir}"])
-        shell_args.extend(["-e", f"USER={host_user}"])
-        shell_args.extend(["-e", f"LOGNAME={host_user}"])
 
     if container_cwd is not None:
         logger.debug(f"mapped cwd [{host_cwd}] -> [{container_cwd}]")
