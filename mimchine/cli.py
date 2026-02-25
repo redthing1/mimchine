@@ -80,6 +80,29 @@ def _run_container_cmd(
         raise typer.Exit(1)
 
 
+def _container_has_command(container_name: str, command_name: str) -> bool:
+    check_cmd = CONTAINER_CMD.bake(
+        "exec",
+        container_name,
+        "sh",
+        "-lc",
+        f"command -v {shlex.quote(command_name)} >/dev/null 2>&1",
+    )
+    logger.debug(f"running command: {check_cmd}")
+    try:
+        check_cmd()
+        return True
+    except sh.ErrorReturnCode:
+        return False
+
+
+def _is_zsh_command(command_args: List[str]) -> bool:
+    if len(command_args) == 0:
+        return False
+
+    return os.path.basename(command_args[0]) == "zsh"
+
+
 @app.callback()
 def app_callback(
     verbose: List[bool] = typer.Option([], "--verbose", "-v", help="Verbose output"),
@@ -386,10 +409,10 @@ def shell(
         help="name of the container to get a shell in.",
     ),
     shell: str = typer.Option(
-        "/bin/zsh",
+        "zsh -l",
         "-s",
         "--shell",
-        help="shell to run in the container.",
+        help="shell command to run in the container.",
     ),
 ):
     _require_mim_container(container_name)
@@ -411,6 +434,15 @@ def shell(
     host_cwd = os.getcwd()
     container_mounts = get_container_mounts(container_name)
     container_cwd = map_host_path_to_container(host_cwd, container_mounts)
+    shell_command_args = shlex.split(shell)
+    if len(shell_command_args) == 0:
+        logger.error("shell command cannot be empty")
+        raise typer.Exit(1)
+
+    if _is_zsh_command(shell_command_args):
+        if not _container_has_command(container_name, "zsh"):
+            logger.error(f"container [{container_name}] does not have zsh installed")
+            raise typer.Exit(1)
 
     logger.info(f"getting shell in container [{container_name}]")
     shell_args = ["exec", "-it"]
@@ -420,7 +452,8 @@ def shell(
     else:
         logger.debug(f"cwd [{host_cwd}] is not under mounted paths")
 
-    shell_args.extend([container_name, shell])
+    shell_args.append(container_name)
+    shell_args.extend(shell_command_args)
 
     _run_container_cmd(
         *shell_args,
