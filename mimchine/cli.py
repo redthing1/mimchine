@@ -48,6 +48,36 @@ def version_callback(value: bool):
         raise typer.Exit()
 
 
+def _require_mim_container(container_name: str):
+    if not container_exists(container_name):
+        logger.error(f"container [{container_name}] does not exist")
+        raise typer.Exit(1)
+
+    if not container_is_mim(container_name):
+        logger.error(f"container [{container_name}] is not a mim container")
+        raise typer.Exit(1)
+
+
+def _run_container_cmd(
+    *args: str,
+    error_action: str,
+    format_output: bool = False,
+    foreground: bool = False,
+):
+    cmd = CONTAINER_CMD.bake(*args)
+    logger.debug(f"running command: {cmd}")
+    try:
+        if foreground:
+            cmd(_fg=True)
+        elif format_output:
+            cmd(**FORMAT_CONTAINER_OUTPUT)
+        else:
+            cmd()
+    except sh.ErrorReturnCode as e:
+        logger.error(f"{error_action} failed with error code {e.exit_code}")
+        raise typer.Exit(1)
+
+
 @app.callback()
 def app_callback(
     verbose: List[bool] = typer.Option([], "--verbose", "-v", help="Verbose output"),
@@ -116,16 +146,11 @@ def build(
     # Add context directory
     build_cmd_args.append(context_dir)
 
-    build_cmd = CONTAINER_CMD.bake(
+    _run_container_cmd(
         *build_cmd_args,
-        **FORMAT_CONTAINER_OUTPUT,
+        error_action="build",
+        format_output=True,
     )
-    logger.debug(f"running command: {build_cmd}")
-    try:
-        build_proc = build_cmd()
-    except sh.ErrorReturnCode as e:
-        logger.error(f"build failed with error code {e.exit_code}")
-        raise typer.Exit(1)
 
     logger.info(f"build complete, image [{image_name}] created")
 
@@ -292,20 +317,15 @@ def create(
         raise typer.Exit(1)
 
     logger.info(f"creating mim container [{container_name}] from image [{image_name}]")
-    create_cmd = CONTAINER_CMD.bake(
+    _run_container_cmd(
         "create",
         *container_create_opts,
         image_name,
         *keepalive_args,
+        error_action="create",
+        format_output=True,
     )
-
-    logger.debug(f"running command: {create_cmd}")
-    try:
-        create_cmd(**FORMAT_CONTAINER_OUTPUT)
-        logger.info(f"container [{container_name}] created")
-    except sh.ErrorReturnCode as e:
-        logger.error(f"run failed with error code {e.exit_code}")
-        raise typer.Exit(1)
+    logger.info(f"container [{container_name}] created")
 
 
 @app.command(help="destroy a container", no_args_is_help=True)
@@ -323,28 +343,17 @@ def destroy(
         help="force destroy the container.",
     ),
 ):
-    if not container_exists(container_name):
-        logger.error(f"container [{container_name}] does not exist")
-        raise typer.Exit(1)
-
-    if not container_is_mim(container_name):
-        logger.error(f"container [{container_name}] is not a mim container")
-        raise typer.Exit(1)
+    _require_mim_container(container_name)
 
     if container_is_running(container_name):
         if force:
-            stop_cmd = CONTAINER_CMD.bake(
+            _run_container_cmd(
                 "stop",
                 "-t",
                 "1",
                 container_name,
+                error_action="stop",
             )
-            logger.debug(f"running command: {stop_cmd}")
-            try:
-                stop_proc = stop_cmd()
-            except sh.ErrorReturnCode as e:
-                logger.error(f"stop failed with error code {e.exit_code}")
-                raise typer.Exit(1)
         else:
             logger.error(f"container [{container_name}] is running")
             raise typer.Exit(1)
@@ -357,17 +366,11 @@ def destroy(
         logger.debug(f"data directory [{container_data_dir}] already absent")
 
     logger.info(f"destroying mim container [{container_name}]")
-    destroy_cmd = CONTAINER_CMD.bake(
+    _run_container_cmd(
         "rm",
         container_name,
+        error_action="destroy",
     )
-
-    logger.debug(f"running command: {destroy_cmd}")
-    try:
-        destroy_proc = destroy_cmd()
-    except sh.ErrorReturnCode as e:
-        logger.error(f"destroy failed with error code {e.exit_code}")
-        raise typer.Exit(1)
 
     logger.info(f"container [{container_name}] destroyed")
 
@@ -387,27 +390,15 @@ def shell(
         help="shell to run in the container.",
     ),
 ):
-    if not container_exists(container_name):
-        logger.error(f"container [{container_name}] does not exist")
-        raise typer.Exit(1)
-
-    if not container_is_mim(container_name):
-        logger.error(f"container [{container_name}] is not a mim container")
-        raise typer.Exit(1)
+    _require_mim_container(container_name)
 
     if not container_is_running(container_name):
         logger.info(f"container [{container_name}] is not running, starting it")
-        start_cmd = CONTAINER_CMD.bake(
+        _run_container_cmd(
             "start",
             container_name,
+            error_action="start",
         )
-
-        logger.debug(f"running command: {start_cmd}")
-        try:
-            start_proc = start_cmd()
-        except sh.ErrorReturnCode as e:
-            logger.error(f"start failed with error code {e.exit_code}")
-            raise typer.Exit(1)
 
     if not container_is_running(container_name):
         logger.error(
@@ -416,19 +407,14 @@ def shell(
         raise typer.Exit(1)
 
     logger.info(f"getting shell in container [{container_name}]")
-    shell_cmd = CONTAINER_CMD.bake(
+    _run_container_cmd(
         "exec",
         "-it",
         container_name,
         shell,
+        error_action="shell",
+        foreground=True,
     )
-
-    logger.debug(f"running command: {shell_cmd}")
-    try:
-        shell_proc = shell_cmd(_fg=True)
-    except sh.ErrorReturnCode as e:
-        logger.error(f"shell failed with error code {e.exit_code}")
-        raise typer.Exit(1)
 
 
 @app.command(help="start a container", no_args_is_help=True)
@@ -440,31 +426,20 @@ def start(
         help="name of the container to start.",
     ),
 ):
-    if not container_exists(container_name):
-        logger.error(f"container [{container_name}] does not exist")
-        raise typer.Exit(1)
-
-    if not container_is_mim(container_name):
-        logger.error(f"container [{container_name}] is not a mim container")
-        raise typer.Exit(1)
+    _require_mim_container(container_name)
 
     if container_is_running(container_name):
         logger.info(f"container [{container_name}] is already running")
         return
 
     logger.info(f"starting container [{container_name}]")
-    start_cmd = CONTAINER_CMD.bake(
+    _run_container_cmd(
         "start",
         container_name,
+        error_action="start",
+        format_output=True,
     )
-
-    logger.debug(f"running command: {start_cmd}")
-    try:
-        start_cmd(**FORMAT_CONTAINER_OUTPUT)
-        logger.info(f"container [{container_name}] started")
-    except sh.ErrorReturnCode as e:
-        logger.error(f"start failed with error code {e.exit_code}")
-        raise typer.Exit(1)
+    logger.info(f"container [{container_name}] started")
 
 
 @app.command(help="stop a container", no_args_is_help=True)
@@ -482,33 +457,22 @@ def stop(
         help="seconds to wait before forcefully stopping the container.",
     ),
 ):
-    if not container_exists(container_name):
-        logger.error(f"container [{container_name}] does not exist")
-        raise typer.Exit(1)
-
-    if not container_is_mim(container_name):
-        logger.error(f"container [{container_name}] is not a mim container")
-        raise typer.Exit(1)
+    _require_mim_container(container_name)
 
     if not container_is_running(container_name):
         logger.info(f"container [{container_name}] is already stopped")
         return
 
     logger.info(f"stopping container [{container_name}]")
-    stop_cmd = CONTAINER_CMD.bake(
+    _run_container_cmd(
         "stop",
         "-t",
         str(timeout),
         container_name,
+        error_action="stop",
+        format_output=True,
     )
-
-    logger.debug(f"running command: {stop_cmd}")
-    try:
-        stop_cmd(**FORMAT_CONTAINER_OUTPUT)
-        logger.info(f"container [{container_name}] stopped")
-    except sh.ErrorReturnCode as e:
-        logger.error(f"stop failed with error code {e.exit_code}")
-        raise typer.Exit(1)
+    logger.info(f"container [{container_name}] stopped")
 
 
 @app.command(help="list all mim containers")
