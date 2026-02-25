@@ -1,4 +1,6 @@
 import os
+import posixpath
+import pwd
 import shlex
 import shutil
 from typing import List, Optional
@@ -8,11 +10,13 @@ import sh
 from minlog import logger
 
 from . import __VERSION__
+from .config import get_container_runtime
 
 from .containers import (
     CONTAINER_CMD,
     FORMAT_CONTAINER_OUTPUT,
     get_containers,
+    get_container_env,
     get_container_mounts,
     container_exists,
     container_is_running,
@@ -24,6 +28,7 @@ from .integration import (
     get_container_integration_mounts,
     get_home_integration_mount,
     get_home_integration_env,
+    get_container_host_home_dir,
     get_home_dir,
     get_app_data_dir,
     map_host_path_to_container,
@@ -103,6 +108,29 @@ def _is_zsh_command(command_args: List[str]) -> bool:
     return os.path.basename(command_args[0]) == "zsh"
 
 
+def _get_host_user_name() -> str:
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return os.environ.get("USER", "user")
+
+
+def _get_shell_home_dir(container_name: str, as_root: bool) -> str:
+    if as_root:
+        return CONTAINER_HOME_DIR
+
+    container_env = get_container_env(container_name)
+    host_home = container_env.get("HOST_HOME")
+    if host_home:
+        return host_home
+
+    return "/tmp"
+
+
+def _normalize_host_path(path: str) -> str:
+    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+
+
 @app.callback()
 def app_callback(
     verbose: List[bool] = typer.Option([], "--verbose", "-v", help="Verbose output"),
@@ -160,15 +188,12 @@ def build(
         image_name,
     ]
 
-    # Add platform option if specified
     if platform:
         build_cmd_args.extend(["--platform", platform])
 
-    # Add build args if specified
     for build_arg in build_args:
         build_cmd_args.extend(["--build-arg", build_arg])
 
-    # Add context directory
     build_cmd_args.append(context_dir)
 
     _run_container_cmd(
@@ -210,7 +235,7 @@ def create(
         [],
         "-M",
         "--mount",
-        help="custom mount in format host_path:container_path (e.g., ~/Downloads/claude:/root/Downloads).",
+        help="custom mount in format host_path:container_path (e.g., ~/Downloads/stuff:/work/stuff).",
     ),
     host_pid: bool = typer.Option(
         False,
@@ -240,7 +265,6 @@ def create(
         logger.error(f"container [{container_name}] already exists")
         raise typer.Exit(1)
 
-    # ensuare an image exists
     if not image_exists(image_name):
         logger.error(f"image [{image_name}] does not exist")
         raise typer.Exit(1)
@@ -257,6 +281,9 @@ def create(
         f"mim=1",
     ]
 
+    if get_container_runtime() == "podman":
+        container_create_opts.extend(["--userns", "keep-id"])
+
     if host_pid:
         container_create_opts.append("--pid=host")
 
@@ -268,52 +295,47 @@ def create(
         container_create_opts.extend(["-e", get_home_integration_env()])
 
     for mount in get_container_integration_mounts(container_data_dir):
-        # mount_source, mount_target = mount.split(":")
-        # if not os.path.exists(mount.source_path):
-        #     logger.warn(
-        #         f"integration mount source [{mount.source_path}] does not exist, skipping"
-        #     )
-        #     continue
-
         if mount.is_file:
-            # if the source is a file, but doesn't exist, create an empty file
             if not os.path.exists(mount.source_path):
                 logger.trace(
                     f"integration mount source [{mount.source_path}] does not exist, creating empty file"
                 )
                 open(mount.source_path, "a").close()
-                # change permissions to 777 so the container can write to it
                 os.chmod(mount.source_path, 0o777)
 
         container_create_opts.extend(
             ["-v", f"{mount.source_path}:{mount.container_path}"]
         )
 
-    user_home_dir = get_home_dir()
+    user_home_dir = _normalize_host_path(get_home_dir())
+    container_host_home = get_container_host_home_dir()
     for home_share in home_shares:
-        # normalize the home share path
-        home_share = os.path.abspath(os.path.expanduser(home_share))
+        home_share = _normalize_host_path(home_share)
 
-        # ensure the home share exists and is under the user's home directory
         if not os.path.exists(home_share):
             logger.warning(f"home share [{home_share}] does not exist, skipping")
             continue
 
-        if not home_share.startswith(user_home_dir):
+        if os.path.commonpath([home_share, user_home_dir]) != user_home_dir:
             logger.warning(
                 f"home share [{home_share}] is not under the user's home directory, skipping"
             )
             continue
 
-        # mount the home share into the container's home directory
-        home_share_src_abs = os.path.abspath(home_share)
+        home_share_src_abs = _normalize_host_path(home_share)
         home_share_src_rel = os.path.relpath(home_share_src_abs, user_home_dir)
-        home_share_target = os.path.join(CONTAINER_HOME_DIR, home_share_src_rel)
+
+        if home_share_src_rel == ".":
+            home_share_target = container_host_home
+        else:
+            home_share_target = posixpath.join(
+                container_host_home, home_share_src_rel.replace("\\", "/")
+            )
+
         container_create_opts.extend(
             ["-v", f"{home_share_src_abs}:{home_share_target}"]
         )
 
-    # process custom mounts
     for custom_mount in custom_mounts:
         if ":" not in custom_mount:
             logger.error(
@@ -323,10 +345,8 @@ def create(
 
         host_path, container_path = custom_mount.split(":", 1)
 
-        # expand user path on host side (e.g., ~/Downloads -> /Users/user/Downloads)
-        host_path_expanded = os.path.abspath(os.path.expanduser(host_path))
+        host_path_expanded = _normalize_host_path(host_path)
 
-        # validate host path exists
         if not os.path.exists(host_path_expanded):
             logger.error(
                 f"custom mount host path [{host_path_expanded}] does not exist"
@@ -417,6 +437,11 @@ def shell(
         "--shell",
         help="shell command to run in the container.",
     ),
+    as_root: bool = typer.Option(
+        False,
+        "--as-root",
+        help="run shell as root inside the container.",
+    ),
 ):
     _require_mim_container(container_name)
 
@@ -437,6 +462,7 @@ def shell(
     host_cwd = os.getcwd()
     container_mounts = get_container_mounts(container_name)
     container_cwd = map_host_path_to_container(host_cwd, container_mounts)
+    shell_home_dir = _get_shell_home_dir(container_name, as_root)
     shell_command_args = shlex.split(shell)
     if len(shell_command_args) == 0:
         logger.error("shell command cannot be empty")
@@ -449,14 +475,27 @@ def shell(
 
     logger.info(f"getting shell in container [{container_name}]")
     shell_args = ["exec", "-it"]
+
+    if as_root:
+        logger.debug("running shell as root")
+        shell_args.extend(["--user", "0:0"])
+    else:
+        host_uid = os.getuid()
+        host_gid = os.getgid()
+        host_user = _get_host_user_name()
+        shell_args.extend(["--user", f"{host_uid}:{host_gid}"])
+        shell_args.extend(["-e", f"HOME={shell_home_dir}"])
+        shell_args.extend(["-e", f"USER={host_user}"])
+        shell_args.extend(["-e", f"LOGNAME={host_user}"])
+
     if container_cwd is not None:
         logger.debug(f"mapped cwd [{host_cwd}] -> [{container_cwd}]")
         shell_args.extend(["-w", container_cwd])
     else:
         logger.debug(
-            f"cwd [{host_cwd}] is not under mounted paths, using [{CONTAINER_HOME_DIR}]"
+            f"cwd [{host_cwd}] is not under mounted paths, using [{shell_home_dir}]"
         )
-        shell_args.extend(["-w", CONTAINER_HOME_DIR])
+        shell_args.extend(["-w", shell_home_dir])
 
     shell_args.append(container_name)
     shell_args.extend(shell_command_args)

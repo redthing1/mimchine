@@ -130,14 +130,22 @@ def get_containers(only_mim=False):
     return parse_container_json(container_json)
 
 
-def get_container_mounts(container_name):
+def _get_container_inspect(container_name):
     inspect_cmd = CONTAINER_CMD.bake("inspect", container_name)
     inspect_json = inspect_cmd()
     inspect_data = parse_container_json(inspect_json)
     if len(inspect_data) == 0:
+        return None
+
+    return inspect_data[0]
+
+
+def get_container_mounts(container_name):
+    inspect_data = _get_container_inspect(container_name)
+    if inspect_data is None:
         return []
 
-    mounts = inspect_data[0].get("Mounts", [])
+    mounts = inspect_data.get("Mounts", [])
     parsed_mounts = []
     for mount in mounts:
         source = mount.get("Source") or mount.get("source")
@@ -151,6 +159,25 @@ def get_container_mounts(container_name):
             )
 
     return parsed_mounts
+
+
+def get_container_env(container_name):
+    inspect_data = _get_container_inspect(container_name)
+    if inspect_data is None:
+        return {}
+
+    env = inspect_data.get("Config", {}).get("Env", [])
+    if not isinstance(env, list):
+        return {}
+
+    parsed_env = {}
+    for item in env:
+        if not isinstance(item, str) or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        parsed_env[key] = value
+
+    return parsed_env
 
 
 def container_exists(container_name):

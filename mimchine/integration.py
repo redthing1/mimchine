@@ -10,17 +10,13 @@ class ContainerIntegrationMount:
     is_file: bool
 
 
-CONTAINER_INTEGRATION_MOUNTS = [
-    # ContainerIntegrationMount("$/.zsh_history", "$/.zsh_history", True),
-    # ContainerIntegrationMount("$/.zsh_history.new", "$/.zsh_history.new", True),
-    # ContainerIntegrationMount("$/.bash_history", "$/.bash_history", True),
-]
+CONTAINER_INTEGRATION_MOUNTS: List[ContainerIntegrationMount] = []
 
 CONTAINER_HOME_DIR = "/root"
 CONTAINER_HOST_HOME_BASE = "/mim/home"
 
 
-def get_container_integration_mounts(data_dir) -> List[str]:
+def get_container_integration_mounts(data_dir) -> List[ContainerIntegrationMount]:
     return [
         ContainerIntegrationMount(
             x.source_path.replace("$", data_dir),
@@ -33,16 +29,18 @@ def get_container_integration_mounts(data_dir) -> List[str]:
 
 def get_home_integration_mount() -> str:
     host_home = os.path.realpath(os.path.abspath(os.path.expanduser(get_home_dir())))
-    home_name = os.path.basename(host_home.rstrip(os.sep))
-    container_home = posixpath.join(CONTAINER_HOST_HOME_BASE, home_name)
+    container_home = get_container_host_home_dir()
     return f"{host_home}:{container_home}"
 
 
 def get_home_integration_env() -> str:
+    return f"HOST_HOME={get_container_host_home_dir()}"
+
+
+def get_container_host_home_dir() -> str:
     host_home = os.path.realpath(os.path.abspath(os.path.expanduser(get_home_dir())))
     home_name = os.path.basename(host_home.rstrip(os.sep))
-    container_home = posixpath.join(CONTAINER_HOST_HOME_BASE, home_name)
-    return f"HOST_HOME={container_home}"
+    return posixpath.join(CONTAINER_HOST_HOME_BASE, home_name)
 
 
 def map_host_path_to_container(host_path: str, mounts) -> str | None:
