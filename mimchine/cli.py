@@ -206,10 +206,10 @@ def create(
         "--privileged",
         help="run the container in privileged mode.",
     ),
-    keepalive_command: str = typer.Option(
-        "sleep infinity",
+    keepalive_command: Optional[str] = typer.Option(
+        None,
         "--keepalive-command",
-        help="command to run as pid 1 so the machine stays alive.",
+        help="override the image command used as pid 1.",
     ),
     integrate_home: bool = typer.Option(
         False,
@@ -318,10 +318,12 @@ def create(
     for port_bind in port_binds:
         container_create_opts.extend(["-p", port_bind])
 
-    keepalive_args = shlex.split(keepalive_command)
-    if len(keepalive_args) == 0:
-        logger.error("keepalive command cannot be empty")
-        raise typer.Exit(1)
+    keepalive_args: list[str] = []
+    if keepalive_command is not None:
+        keepalive_args = shlex.split(keepalive_command)
+        if len(keepalive_args) == 0:
+            logger.error("keepalive command cannot be empty")
+            raise typer.Exit(1)
 
     logger.info(f"creating mim container [{container_name}] from image [{image_name}]")
     _run_container_cmd(
