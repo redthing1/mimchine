@@ -217,3 +217,23 @@ def image_exists(image_name):
         return _image_exists_podman(image_name)
     else:
         return _image_exists_docker(image_name)
+
+
+def resolve_image_home(image_name: str) -> str:
+    probe_cmd = CONTAINER_CMD.bake(
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        image_name,
+        "-lc",
+        'printf "%s" "${HOME:-}"',
+    )
+    try:
+        output = str(probe_cmd()).strip()
+        if output:
+            return output
+    except sh.ErrorReturnCode:
+        pass
+
+    return "/root"

@@ -21,12 +21,12 @@ from .containers import (
     container_is_mim,
     get_container_display_name,
     image_exists,
+    resolve_image_home,
 )
 from .integration import (
     get_container_integration_mounts,
     get_home_integration_mount,
     get_home_integration_env,
-    get_container_host_home_dir,
     get_home_dir,
     get_app_data_dir,
     map_host_path_to_container,
@@ -86,6 +86,53 @@ def _run_container_cmd(
     except sh.ErrorReturnCode as e:
         logger.error(f"{error_action} failed with error code {e.exit_code}")
         raise typer.Exit(1)
+
+
+def _get_home_share_mount_pairs(
+    home_shares: List[str],
+    image_name: str,
+) -> list[tuple[str, str]]:
+    if len(home_shares) == 0:
+        return []
+
+    user_home_dir = normalize_host_path(get_home_dir())
+    image_home_dir = resolve_image_home(image_name)
+    mounted_pairs: set[tuple[str, str]] = set()
+    mount_pairs: list[tuple[str, str]] = []
+
+    for home_share_input in home_shares:
+        home_share_src_abs = normalize_host_path(home_share_input)
+
+        if not os.path.exists(home_share_src_abs):
+            logger.warning(f"home share [{home_share_src_abs}] does not exist, skipping")
+            continue
+
+        if os.path.commonpath([home_share_src_abs, user_home_dir]) != user_home_dir:
+            logger.warning(
+                f"home share [{home_share_src_abs}] is not under the user's home directory, skipping"
+            )
+            continue
+
+        home_share_pair = (home_share_src_abs, home_share_src_abs)
+        if home_share_pair not in mounted_pairs:
+            mount_pairs.append(home_share_pair)
+            mounted_pairs.add(home_share_pair)
+
+        home_share_src_rel = os.path.relpath(home_share_src_abs, user_home_dir)
+        if home_share_src_rel == ".":
+            home_share_tilde_target = image_home_dir
+        else:
+            home_share_tilde_target = posixpath.join(
+                image_home_dir, home_share_src_rel.replace("\\", "/")
+            )
+
+        home_share_tilde_pair = (home_share_src_abs, home_share_tilde_target)
+        if home_share_tilde_pair[1] != home_share_tilde_pair[0]:
+            if home_share_tilde_pair not in mounted_pairs:
+                mount_pairs.append(home_share_tilde_pair)
+                mounted_pairs.add(home_share_tilde_pair)
+
+    return mount_pairs
 
 
 @app.callback()
@@ -180,7 +227,7 @@ def create(
         [],
         "-H",
         "--home-share",
-        help="path to a directory to share with the container.",
+        help="passthrough mount under host home; available at identical path and under container HOME.",
     ),
     port_binds: List[str] = typer.Option(
         [],
@@ -272,34 +319,10 @@ def create(
             ["-v", f"{mount.source_path}:{mount.container_path}"]
         )
 
-    user_home_dir = normalize_host_path(get_home_dir())
-    container_host_home = get_container_host_home_dir()
-    for home_share in home_shares:
-        home_share = normalize_host_path(home_share)
-
-        if not os.path.exists(home_share):
-            logger.warning(f"home share [{home_share}] does not exist, skipping")
-            continue
-
-        if os.path.commonpath([home_share, user_home_dir]) != user_home_dir:
-            logger.warning(
-                f"home share [{home_share}] is not under the user's home directory, skipping"
-            )
-            continue
-
-        home_share_src_abs = normalize_host_path(home_share)
-        home_share_src_rel = os.path.relpath(home_share_src_abs, user_home_dir)
-
-        if home_share_src_rel == ".":
-            home_share_target = container_host_home
-        else:
-            home_share_target = posixpath.join(
-                container_host_home, home_share_src_rel.replace("\\", "/")
-            )
-
-        container_create_opts.extend(
-            ["-v", f"{home_share_src_abs}:{home_share_target}"]
-        )
+    for home_share_src, home_share_target in _get_home_share_mount_pairs(
+        home_shares, image_name
+    ):
+        container_create_opts.extend(["-v", f"{home_share_src}:{home_share_target}"])
 
     for custom_mount in custom_mounts:
         if ":" not in custom_mount:
