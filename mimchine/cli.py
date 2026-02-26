@@ -32,11 +32,9 @@ from .integration import (
     map_host_path_to_container,
 )
 from .shell_helpers import (
-    container_has_command,
-    is_zsh_command,
     get_shell_home_dir,
     get_non_root_shell_identity_args,
-    prepare_non_root_zsh_shell,
+    prepare_non_root_shell,
     normalize_host_path,
 )
 
@@ -237,7 +235,7 @@ def create(
         container_name,
         "--init",
         "--label",
-        f"mim=1",
+        "mim=1",
     ]
 
     if get_container_runtime() == "podman":
@@ -255,12 +253,20 @@ def create(
 
     for mount in get_container_integration_mounts(container_data_dir):
         if mount.is_file:
+            source_dir = os.path.dirname(mount.source_path)
+            if source_dir:
+                os.makedirs(source_dir, exist_ok=True)
             if not os.path.exists(mount.source_path):
                 logger.trace(
                     f"integration mount source [{mount.source_path}] does not exist, creating empty file"
                 )
                 open(mount.source_path, "a").close()
                 os.chmod(mount.source_path, 0o777)
+        elif not os.path.exists(mount.source_path):
+            logger.trace(
+                f"integration mount source [{mount.source_path}] does not exist, creating directory"
+            )
+            os.makedirs(mount.source_path, exist_ok=True)
 
         container_create_opts.extend(
             ["-v", f"{mount.source_path}:{mount.container_path}"]
@@ -429,20 +435,19 @@ def shell(
     if len(shell_command_args) == 0:
         logger.error("shell command cannot be empty")
         raise typer.Exit(1)
-    shell_is_zsh = is_zsh_command(shell_command_args)
     shell_env: list[tuple[str, str]] = []
 
-    if shell_is_zsh:
-        if not container_has_command(container_name, "zsh"):
-            logger.error(f"container [{container_name}] does not have zsh installed")
-            raise typer.Exit(1)
-        if not as_root:
-            shell_home_dir, zsh_env = prepare_non_root_zsh_shell(
+    if not as_root:
+        try:
+            shell_home_dir, shell_env = prepare_non_root_shell(
                 container_name,
                 runtime,
                 shell_home_dir,
+                shell_command_args,
             )
-            shell_env.extend(zsh_env)
+        except ValueError as exc:
+            logger.error(str(exc))
+            raise typer.Exit(1)
 
     logger.info(f"getting shell in container [{container_name}]")
     shell_args = ["exec", "-it"]

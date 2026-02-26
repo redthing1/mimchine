@@ -10,10 +10,18 @@ class ContainerIntegrationMount:
     is_file: bool
 
 
-CONTAINER_INTEGRATION_MOUNTS: List[ContainerIntegrationMount] = []
-
 CONTAINER_HOME_DIR = "/root"
 CONTAINER_HOST_HOME_BASE = "/mim/home"
+CONTAINER_SHELL_STATE_DIR = "/mim/shell-state"
+CONTAINER_SHELL_HISTORY_DIR = CONTAINER_SHELL_STATE_DIR
+
+CONTAINER_INTEGRATION_MOUNTS: List[ContainerIntegrationMount] = [
+    ContainerIntegrationMount(
+        "$/shell-state",
+        CONTAINER_SHELL_STATE_DIR,
+        False,
+    ),
+]
 
 
 def get_container_integration_mounts(data_dir) -> List[ContainerIntegrationMount]:
