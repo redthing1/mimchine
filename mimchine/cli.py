@@ -454,7 +454,11 @@ def shell(
     container_mounts = get_container_mounts(container_name)
     container_cwd = map_host_path_to_container(host_cwd, container_mounts)
     runtime = get_container_runtime()
-    shell_home_dir = get_shell_home_dir(container_name, as_root)
+    try:
+        shell_home_dir = get_shell_home_dir(container_name, as_root)
+    except ValueError as exc:
+        logger.error(str(exc))
+        raise typer.Exit(1)
     shell_command_args = shlex.split(shell)
     if len(shell_command_args) == 0:
         logger.error("shell command cannot be empty")

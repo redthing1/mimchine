@@ -39,20 +39,44 @@ def is_zsh_command(command_args: list[str]) -> bool:
     return os.path.basename(command_args[0]) == "zsh"
 
 
+def probe_container_default_home(container_name: str) -> str:
+    probe_cmd = CONTAINER_CMD.bake(
+        "exec",
+        container_name,
+        "sh",
+        "-lc",
+        'printf "%s" "${HOME:-}"',
+    )
+    logger.debug(f"running command: {probe_cmd}")
+    try:
+        return str(probe_cmd()).strip()
+    except sh.ErrorReturnCode as exc:
+        logger.debug(
+            f"could not probe default home for container [{container_name}] (code {exc.exit_code})"
+        )
+        return ""
+
+
 def get_shell_home_dir(container_name: str, as_root: bool) -> str:
     if as_root:
         return CONTAINER_HOME_DIR
 
     container_env = get_container_env(container_name)
-    container_host_home = container_env.get("HOST_HOME")
+    container_host_home = container_env.get("HOST_HOME", "").strip()
     if container_host_home:
         return container_host_home
 
-    container_home = container_env.get("HOME")
+    container_home = container_env.get("HOME", "").strip()
     if container_home:
         return container_home
 
-    return "/tmp"
+    default_home = probe_container_default_home(container_name)
+    if default_home:
+        return default_home
+
+    raise ValueError(
+        f"container [{container_name}] does not define a non-root home (checked HOST_HOME, HOME, default shell HOME)"
+    )
 
 
 def get_non_root_shell_identity_args(runtime: str) -> list[str]:
@@ -206,14 +230,65 @@ def resolve_non_root_shell_home(
     runtime: str,
     shell_home_dir: str,
 ) -> str:
+    if len(shell_home_dir.strip()) == 0:
+        raise ValueError("shell home directory cannot be empty")
+
+    if not shell_home_dir.startswith("/"):
+        raise ValueError(
+            f"shell home directory must be absolute, got [{shell_home_dir}]"
+        )
+
+    if shell_home_dir in ("/", "/root"):
+        raise ValueError(
+            f"refusing to use shell home directory [{shell_home_dir}] for non-root shell"
+        )
+
+    if runtime == "docker":
+        identity = get_host_identity()
+        ensure_home_script = f"""
+set -eu
+
+home={shlex.quote(shell_home_dir)}
+uid={identity.uid}
+gid={identity.gid}
+
+mkdir -p "$home"
+chown "$uid:$gid" "$home"
+chmod u+rwx "$home"
+"""
+        ensure_home_cmd = CONTAINER_CMD.bake(
+            "exec",
+            "--user",
+            "0:0",
+            container_name,
+            "sh",
+            "-lc",
+            ensure_home_script,
+        )
+        logger.debug(f"running command: {ensure_home_cmd}")
+        try:
+            ensure_home_cmd()
+        except sh.ErrorReturnCode as exc:
+            raise ValueError(
+                f"could not prepare writable shell home [{shell_home_dir}] in container [{container_name}] (code {exc.exit_code})"
+            ) from exc
+
     script = """
+set -eu
+
 if [ -z "$HOME" ]; then
-  HOME=/tmp
+  echo "HOME is empty" >&2
+  exit 1
 fi
 
-if ! (mkdir -p "$HOME" 2>/dev/null && [ -w "$HOME" ]); then
-  HOME=/tmp
-  mkdir -p "$HOME"
+if ! mkdir -p "$HOME" 2>/dev/null; then
+  echo "HOME [$HOME] could not be created" >&2
+  exit 1
+fi
+
+if [ ! -w "$HOME" ]; then
+  echo "HOME [$HOME] is not writable" >&2
+  exit 1
 fi
 
 printf "%s\\n" "$HOME"
@@ -227,13 +302,14 @@ printf "%s\\n" "$HOME"
         )
         resolved_home = [line.strip() for line in output.splitlines() if line.strip()]
         if len(resolved_home) == 0:
-            return shell_home_dir
+            raise ValueError(
+                f"shell home probe returned no path for container [{container_name}]"
+            )
         return resolved_home[-1]
     except sh.ErrorReturnCode as exc:
-        logger.debug(
-            f"could not resolve writable shell home [{shell_home_dir}] (code {exc.exit_code}), using it as-is"
-        )
-        return shell_home_dir
+        raise ValueError(
+            f"shell home [{shell_home_dir}] is not writable for non-root shell in container [{container_name}] (code {exc.exit_code})"
+        ) from exc
 
 
 def get_non_root_zsh_env(container_name: str) -> list[tuple[str, str]]:
