@@ -54,7 +54,7 @@ def load_config() -> Dict[str, Any]:
     try:
         with open(config_path, "rb") as f:
             config = tomllib.load(f)
-        logger.debug(f"Loaded config from {config_path}")
+        logger.debug(f"loaded config from {config_path}")
         return config
     except Exception as e:
         logger.warn(f"failed to load config from {config_path}: {e}")
