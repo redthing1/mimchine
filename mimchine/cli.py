@@ -364,7 +364,7 @@ def create(
         [],
         "-M",
         "--mount",
-        help="custom mount in format host_path:container_path (e.g., ~/Downloads/stuff:/work/stuff).",
+        help="custom mount in format host_path:container_path.",
     ),
     devices: List[str] = typer.Option(
         [],
