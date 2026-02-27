@@ -6,14 +6,14 @@ from typing import List, Optional
 
 import typer
 import sh
-from minlog import logger
 
 from . import __VERSION__
 from .config import get_container_runtime
+from .log import configure_logging, logger
+from . import output
 
 from .containers import (
     CONTAINER_CMD,
-    FORMAT_CONTAINER_OUTPUT,
     get_containers,
     get_container_mounts,
     container_exists,
@@ -50,11 +50,15 @@ app = typer.Typer(
 )
 
 DATA_DIR = get_app_data_dir(APP_NAME)
+FORMAT_CONTAINER_OUTPUT = {
+    "_out": output.stream_stdout,
+    "_err": output.stream_stderr,
+}
 
 
 def version_callback(value: bool):
     if value:
-        logger.info(f"{APP_NAME} v{__VERSION__}")
+        output.print_version(APP_NAME, __VERSION__)
         raise typer.Exit()
 
 
@@ -104,11 +108,13 @@ def _get_home_share_mount_pairs(
         home_share_src_abs = normalize_host_path(home_share_input)
 
         if not os.path.exists(home_share_src_abs):
-            logger.warning(f"home share [{home_share_src_abs}] does not exist, skipping")
+            logger.warn(
+                f"home share [{home_share_src_abs}] does not exist, skipping"
+            )
             continue
 
         if os.path.commonpath([home_share_src_abs, user_home_dir]) != user_home_dir:
-            logger.warning(
+            logger.warn(
                 f"home share [{home_share_src_abs}] is not under the user's home directory, skipping"
             )
             continue
@@ -143,12 +149,7 @@ def app_callback(
         None, "--version", "-V", callback=version_callback, is_eager=True
     ),
 ):
-    if len(verbose) == 1:
-        logger.be_verbose()
-    elif len(verbose) == 2:
-        logger.be_debug()
-    elif quiet:
-        logger.be_quiet()
+    configure_logging(len(verbose), quiet)
 
 
 @app.command(help="build an image from a dockerfile", no_args_is_help=True)
@@ -563,18 +564,12 @@ def stop(
 
 @app.command(help="list all mim containers")
 def list():
-    logger.info("listing all mim containers")
-
     containers = get_containers(only_mim=True)
-    if len(containers) == 0:
-        logger.info("no mim containers found")
-        return
-
-    logger.info(f"mim containers[{len(containers)}]:")
-    for container in containers:
-        container_name = get_container_display_name(container)
-        container_state = container["State"]
-
-        logger.info(
-            f"  [{container_name}] ({container_state})",
+    rows = [
+        (
+            get_container_display_name(container),
+            str(container.get("State", "unknown")),
         )
+        for container in containers
+    ]
+    output.print_container_list(rows)

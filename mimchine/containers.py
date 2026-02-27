@@ -1,6 +1,7 @@
 import sh
 import json
-from minlog import logger
+
+from .log import logger
 
 from .config import get_container_runtime
 
@@ -31,7 +32,7 @@ def get_container_command():
         return sh.Command(runtime)
     except sh.CommandNotFound:
         logger.error(
-            f"Container runtime '{runtime}' not found. Please ensure it's installed and in your PATH."
+            f"container runtime '{runtime}' not found. please ensure it's installed and in your PATH."
         )
         raise
 
@@ -42,11 +43,6 @@ class _LazyContainerCommand:
 
 
 CONTAINER_CMD = _LazyContainerCommand()
-
-FORMAT_CONTAINER_OUTPUT = {
-    "_out": lambda line: print(f"  {line}", end=""),
-    "_err": lambda line: print(f"  {line}", end=""),
-}
 
 
 def _supports_image_exists():
@@ -111,12 +107,12 @@ def _get_container_by_name(container_name):
     return None
 
 
-def get_container_display_name(container):
+def get_container_display_name(container: dict) -> str:
     names = _parse_container_names(container.get("Names"))
     if names:
         return names[0]
 
-    return container.get("Id", "<unknown>")
+    return str(container.get("Id", "<unknown>"))
 
 
 def get_containers(only_mim=False):

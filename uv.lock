@@ -49,8 +49,9 @@ name = "mimchine"
 version = "0.25.0"
 source = { editable = "." }
 dependencies = [
-    { name = "minlog" },
     { name = "platformdirs" },
+    { name = "redlog-py" },
+    { name = "rich" },
     { name = "sh" },
     { name = "single-source" },
     { name = "typer" },
@@ -58,24 +59,12 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "minlog", specifier = ">=0.6.0,<0.7.0" },
     { name = "platformdirs", specifier = ">=4.2.0,<5.0.0" },
+    { name = "redlog-py", specifier = ">=0.1.1" },
+    { name = "rich", specifier = ">=13.9.4" },
     { name = "sh", specifier = ">=2.2.2,<3.0.0" },
     { name = "single-source", specifier = ">=0.4.0" },
     { name = "typer", specifier = ">=0.15.2,<0.16.0" },
-]
-
-[[package]]
-name = "minlog"
-version = "0.6.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "colorama" },
-    { name = "rich" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/03/22/9290ba26e08ad7f4505ffc87aaf9cbb033c196075f51532349b6107e0fbf/minlog-0.6.0.tar.gz", hash = "sha256:4c8a956abb2d5e788d19b5d8810c40d991041bf2d241d0f5b7064199ced9bd2f", size = 4190, upload-time = "2025-03-26T22:27:06.6Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f0/9d/814bea46ab8efbcd9044c85c0dc3bae975f5705ecff3b14d951ed0804913/minlog-0.6.0-py3-none-any.whl", hash = "sha256:40377c2291c8efab16de1f53960ecabbd909c0f4b52911f4912a95e30a7e1abb", size = 5260, upload-time = "2025-03-26T22:27:05.376Z" },
 ]
 
 [[package]]
@@ -94,6 +83,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/b0/77/a5b8c569bf593b0140bde72ea885a803b82086995367bf2037de0159d924/pygments-2.19.2.tar.gz", hash = "sha256:636cb2477cec7f8952536970bc533bc43743542f70392ae026374600add5b887", size = 4968631, upload-time = "2025-06-21T13:39:12.283Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/21/705964c7812476f378728bdf590ca4b771ec72385c533964653c68e86bdc/pygments-2.19.2-py3-none-any.whl", hash = "sha256:86540386c03d588bb81d44bc3928634ff26449851e99741617ecb9037ee5ec0b", size = 1225217, upload-time = "2025-06-21T13:39:07.939Z" },
+]
+
+[[package]]
+name = "redlog-py"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama" },
+    { name = "rich" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/39/00/09a17b1914d461dcc4a59000a6fa05d00836fd87c9d30cd992f3bf167ae5/redlog_py-0.1.1.tar.gz", hash = "sha256:879aba748f385d99b227e3e50fd180e37ee04ce20810ea03184a435c3b75932b", size = 9762, upload-time = "2025-07-19T19:55:14.32Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/12/4a/882b5e29d9bf81bb1b83bcae8c8714d0759c3f638f20bf27c1c0a05a0279/redlog_py-0.1.1-py3-none-any.whl", hash = "sha256:a7160976cff45739b1fe02afc30e0022e2ed6312e7cf82414f886497cf811ba3", size = 11504, upload-time = "2025-07-19T19:55:13.503Z" },
 ]
 
 [[package]]

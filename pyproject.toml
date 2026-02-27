@@ -8,8 +8,9 @@ authors = [
     { name = "redthing1", email = "redthing1@alt.icu" },
 ]
 dependencies = [
-    "minlog>=0.6.0,<0.7.0",
     "platformdirs>=4.2.0,<5.0.0",
+    "redlog-py>=0.1.1",
+    "rich>=13.9.4",
     "sh>=2.2.2,<3.0.0",
     "single-source>=0.4.0",
     "typer>=0.15.2,<0.16.0",

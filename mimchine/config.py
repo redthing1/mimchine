@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Dict, Any
 
 from platformdirs import user_config_dir
-from minlog import logger
+from .log import logger
 
 import tomllib
 
@@ -47,7 +47,7 @@ def load_config() -> Dict[str, Any]:
     config_path = get_config_path()
 
     if not config_path.exists():
-        logger.info(f"Config file not found at {config_path}")
+        logger.info(f"config file not found at {config_path}")
         create_default_config()
         return DEFAULT_CONFIG.copy()
 
@@ -57,8 +57,8 @@ def load_config() -> Dict[str, Any]:
         logger.debug(f"Loaded config from {config_path}")
         return config
     except Exception as e:
-        logger.warning(f"Failed to load config from {config_path}: {e}")
-        logger.info("Using default configuration")
+        logger.warn(f"failed to load config from {config_path}: {e}")
+        logger.info("using default configuration")
         return DEFAULT_CONFIG.copy()
 
 
@@ -72,10 +72,10 @@ def create_default_config() -> None:
 
     try:
         config_path.write_text(DEFAULT_CONFIG_TOML, encoding="utf-8")
-        logger.info(f"Created default config file at {config_path}")
-        logger.info("You can edit this file to customize mimchine's behavior")
+        logger.info(f"created default config file at {config_path}")
+        logger.info("you can edit this file to customize mimchine's behavior")
     except Exception as e:
-        logger.error(f"Failed to create config file at {config_path}: {e}")
+        logger.error(f"failed to create config file at {config_path}: {e}")
 
 
 def get_container_runtime() -> str:
@@ -99,7 +99,7 @@ def validate_config(config: Dict[str, Any]) -> bool:
             runtime = container_config["runtime"]
             if runtime not in ["podman", "docker"]:
                 logger.error(
-                    f"Invalid container runtime: {runtime}. Must be 'podman' or 'docker'"
+                    f"invalid container runtime: {runtime}. must be 'podman' or 'docker'"
                 )
                 return False
 

@@ -7,7 +7,7 @@ import shlex
 from dataclasses import dataclass
 
 import sh
-from minlog import logger
+from .log import logger
 
 from .containers import CONTAINER_CMD, get_container_env
 from .integration import CONTAINER_HOME_DIR, CONTAINER_SHELL_HISTORY_DIR
