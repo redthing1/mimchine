@@ -321,9 +321,7 @@ def get_non_root_zsh_env(container_name: str) -> list[tuple[str, str]]:
         )
         return []
 
-    logger.debug(
-        f"using zsh config dir from {MIM_ZDOTDIR_ENV_KEY}: [{image_zdotdir}]"
-    )
+    logger.debug(f"using zsh config dir from {MIM_ZDOTDIR_ENV_KEY}: [{image_zdotdir}]")
     return [("ZDOTDIR", image_zdotdir)]
 
 

@@ -108,9 +108,7 @@ def _get_home_share_mount_pairs(
         home_share_src_abs = normalize_host_path(home_share_input)
 
         if not os.path.exists(home_share_src_abs):
-            logger.warn(
-                f"home share [{home_share_src_abs}] does not exist, skipping"
-            )
+            logger.warn(f"home share [{home_share_src_abs}] does not exist, skipping")
             continue
 
         if os.path.commonpath([home_share_src_abs, user_home_dir]) != user_home_dir:
