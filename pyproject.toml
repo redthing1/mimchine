@@ -17,6 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
+mim = "mimchine.__main__:main"
 mimchine = "mimchine.__main__:main"
 
 [build-system]
