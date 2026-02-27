@@ -57,25 +57,59 @@ def probe_container_default_home(container_name: str) -> str:
         return ""
 
 
-def get_shell_home_dir(container_name: str, as_root: bool) -> str:
+def _is_valid_non_root_home(path: str) -> bool:
+    path = path.strip()
+    return len(path) > 0 and path.startswith("/") and path not in ("/", "/root")
+
+
+def probe_non_root_identity_home(container_name: str, runtime: str) -> str:
+    script = """
+set -eu
+uid="$(id -u)"
+home="$(awk -F: -v uid="$uid" '$3 == uid { print $6; exit }' /etc/passwd || true)"
+printf "%s" "$home"
+"""
+    probe_cmd = CONTAINER_CMD.bake(
+        "exec",
+        *get_non_root_shell_identity_args(runtime),
+        container_name,
+        "sh",
+        "-lc",
+        script,
+    )
+    logger.debug(f"running command: {probe_cmd}")
+    try:
+        return str(probe_cmd()).strip()
+    except sh.ErrorReturnCode as exc:
+        logger.debug(
+            f"could not probe non-root identity home for container [{container_name}] (code {exc.exit_code})"
+        )
+        return ""
+
+
+def get_shell_home_dir(container_name: str, runtime: str, as_root: bool) -> str:
     if as_root:
         return CONTAINER_HOME_DIR
 
     container_env = get_container_env(container_name)
     container_host_home = container_env.get("HOST_HOME", "").strip()
-    if container_host_home:
+    if _is_valid_non_root_home(container_host_home):
         return container_host_home
 
+    identity_home = probe_non_root_identity_home(container_name, runtime)
+    if _is_valid_non_root_home(identity_home):
+        return identity_home
+
     container_home = container_env.get("HOME", "").strip()
-    if container_home:
+    if _is_valid_non_root_home(container_home):
         return container_home
 
     default_home = probe_container_default_home(container_name)
-    if default_home:
+    if _is_valid_non_root_home(default_home):
         return default_home
 
     raise ValueError(
-        f"container [{container_name}] does not define a non-root home (checked HOST_HOME, HOME, default shell HOME)"
+        f"container [{container_name}] does not define a valid non-root home (checked HOST_HOME, uid passwd home, HOME, default shell HOME)"
     )
 
 

@@ -14,6 +14,34 @@ DEFAULT_CONFIG = {
     }
 }
 DEFAULT_CONFIG_TOML = '[container]\nruntime = "podman"\n'
+SUPPORTED_CONTAINER_RUNTIMES = ("podman", "docker")
+SUPPORTED_CONTAINER_RUNTIMES_STR = ", ".join(SUPPORTED_CONTAINER_RUNTIMES)
+
+_container_runtime_override: str | None = None
+
+
+def _normalize_runtime(runtime: str) -> str:
+    return runtime.strip().lower()
+
+
+def _normalize_and_validate_runtime(runtime: str) -> str:
+    normalized_runtime = _normalize_runtime(runtime)
+    if normalized_runtime not in SUPPORTED_CONTAINER_RUNTIMES:
+        raise ValueError(
+            f"invalid container runtime: {runtime}. must be one of: {SUPPORTED_CONTAINER_RUNTIMES_STR}"
+        )
+
+    return normalized_runtime
+
+
+def set_container_runtime_override(runtime: str | None) -> None:
+    global _container_runtime_override
+
+    if runtime is None:
+        _container_runtime_override = None
+        return
+
+    _container_runtime_override = _normalize_and_validate_runtime(runtime)
 
 
 def get_config_dir() -> Path:
@@ -80,8 +108,19 @@ def create_default_config() -> None:
 
 def get_container_runtime() -> str:
     """Get the configured container runtime (podman or docker)."""
+    if _container_runtime_override is not None:
+        return _container_runtime_override
+
     config = load_config()
-    return config.get("container", {}).get("runtime", "podman")
+    runtime = str(config.get("container", {}).get("runtime", "podman"))
+    try:
+        return _normalize_and_validate_runtime(runtime)
+    except ValueError:
+        normalized_runtime = _normalize_runtime(runtime)
+        logger.error(
+            f"invalid container runtime in config: {normalized_runtime}. falling back to podman"
+        )
+        return "podman"
 
 
 def validate_config(config: Dict[str, Any]) -> bool:
@@ -96,10 +135,12 @@ def validate_config(config: Dict[str, Any]) -> bool:
             return False
 
         if "runtime" in container_config:
-            runtime = container_config["runtime"]
-            if runtime not in ["podman", "docker"]:
+            runtime = str(container_config["runtime"])
+            try:
+                _normalize_and_validate_runtime(runtime)
+            except ValueError:
                 logger.error(
-                    f"invalid container runtime: {runtime}. must be 'podman' or 'docker'"
+                    f"invalid container runtime: {runtime}. must be one of: {SUPPORTED_CONTAINER_RUNTIMES_STR}"
                 )
                 return False
 

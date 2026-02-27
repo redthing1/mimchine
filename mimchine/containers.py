@@ -5,6 +5,11 @@ from .log import logger
 
 from .config import get_container_runtime
 
+SHELL_USER_LABEL_KEY = "mim.shell-user"
+SHELL_USER_ROOT = "root"
+SHELL_USER_USER = "user"
+SUPPORTED_SHELL_USERS = (SHELL_USER_ROOT, SHELL_USER_USER)
+
 
 def parse_container_json(json_output):
     """parse json output that could be either a json array or jsonl format."""
@@ -89,6 +94,10 @@ def _parse_container_labels(labels):
         return {}
 
 
+def _normalize_shell_user(value: str) -> str:
+    return value.strip().lower()
+
+
 def _parse_container_names(names):
     if isinstance(names, list):
         return [str(name).lstrip("/") for name in names if str(name).strip()]
@@ -136,6 +145,16 @@ def _get_container_inspect(container_name):
     return inspect_data[0]
 
 
+def _get_image_inspect(image_name):
+    inspect_cmd = CONTAINER_CMD.bake("image", "inspect", image_name)
+    inspect_json = inspect_cmd()
+    inspect_data = parse_container_json(inspect_json)
+    if len(inspect_data) == 0:
+        return None
+
+    return inspect_data[0]
+
+
 def get_container_mounts(container_name):
     inspect_data = _get_container_inspect(container_name)
     if inspect_data is None:
@@ -174,6 +193,63 @@ def get_container_env(container_name):
         parsed_env[key] = value
 
     return parsed_env
+
+
+def get_container_labels(container_name: str) -> dict[str, str]:
+    inspect_data = _get_container_inspect(container_name)
+    if inspect_data is None:
+        return {}
+
+    labels = inspect_data.get("Config", {}).get("Labels", {})
+    return _parse_container_labels(labels)
+
+
+def get_container_image(container_name: str) -> str:
+    inspect_data = _get_container_inspect(container_name)
+    if inspect_data is None:
+        return ""
+
+    image_name = inspect_data.get("Config", {}).get("Image", "")
+    if not isinstance(image_name, str):
+        return ""
+
+    return image_name.strip()
+
+
+def get_image_labels(image_name: str) -> dict[str, str]:
+    inspect_data = _get_image_inspect(image_name)
+    if inspect_data is None:
+        return {}
+
+    labels = inspect_data.get("Config", {}).get("Labels", {})
+    return _parse_container_labels(labels)
+
+
+def resolve_container_shell_user(container_name: str) -> str | None:
+    label_value = get_container_labels(container_name).get(SHELL_USER_LABEL_KEY, "")
+    if not isinstance(label_value, str):
+        label_value = ""
+
+    if len(label_value.strip()) == 0:
+        image_name = get_container_image(container_name)
+        if len(image_name) > 0:
+            image_label_value = get_image_labels(image_name).get(
+                SHELL_USER_LABEL_KEY, ""
+            )
+            if isinstance(image_label_value, str):
+                label_value = image_label_value
+
+    if len(label_value.strip()) == 0:
+        return None
+
+    normalized_shell_user = _normalize_shell_user(label_value)
+    if normalized_shell_user not in SUPPORTED_SHELL_USERS:
+        logger.warn(
+            f"ignoring invalid shell user label [{label_value}] on container [{container_name}]"
+        )
+        return None
+
+    return normalized_shell_user
 
 
 def container_exists(container_name):

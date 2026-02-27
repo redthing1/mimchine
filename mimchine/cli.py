@@ -8,19 +8,21 @@ import typer
 import sh
 
 from . import __VERSION__
-from .config import get_container_runtime
+from .config import get_container_runtime, set_container_runtime_override
 from .log import configure_logging, logger
 from . import output
 
 from .containers import (
     CONTAINER_CMD,
+    SHELL_USER_ROOT,
     get_containers,
+    get_container_display_name,
     get_container_mounts,
     container_exists,
-    container_is_running,
     container_is_mim,
-    get_container_display_name,
+    container_is_running,
     image_exists,
+    resolve_container_shell_user,
     resolve_image_home,
 )
 from .integration import (
@@ -92,6 +94,36 @@ def _run_container_cmd(
         raise typer.Exit(1)
 
 
+def _resolve_shell_as_root(
+    container_name: str,
+    as_root: bool,
+    as_user: bool,
+) -> bool:
+    if as_root and as_user:
+        logger.error("cannot use --as-root and --as-user together")
+        raise typer.Exit(1)
+
+    if as_root:
+        return True
+
+    if as_user:
+        return False
+
+    shell_user = resolve_container_shell_user(container_name)
+    if shell_user == SHELL_USER_ROOT:
+        logger.debug(
+            f"using root shell for container [{container_name}] from shell-user label"
+        )
+        return True
+
+    if shell_user is not None:
+        logger.debug(
+            f"using non-root shell for container [{container_name}] from shell-user label"
+        )
+
+    return False
+
+
 def _get_home_share_mount_pairs(
     home_shares: List[str],
     image_name: str,
@@ -139,15 +171,109 @@ def _get_home_share_mount_pairs(
     return mount_pairs
 
 
+def _parse_custom_mount_specs(
+    custom_mounts: List[str],
+) -> list[tuple[str, str]]:
+    parsed_mounts: list[tuple[str, str]] = []
+
+    for custom_mount in custom_mounts:
+        if ":" not in custom_mount:
+            logger.error(
+                f"invalid mount format [{custom_mount}], expected host_path:container_path"
+            )
+            raise typer.Exit(1)
+
+        host_path, container_path = custom_mount.split(":", 1)
+        host_path_expanded = normalize_host_path(host_path)
+        container_path = container_path.strip()
+
+        if not os.path.exists(host_path_expanded):
+            logger.error(
+                f"custom mount host path [{host_path_expanded}] does not exist"
+            )
+            raise typer.Exit(1)
+
+        if len(container_path) == 0:
+            logger.error(
+                f"custom mount [{custom_mount}] has empty container path target"
+            )
+            raise typer.Exit(1)
+
+        if not container_path.startswith("/"):
+            logger.error(
+                f"custom mount target [{container_path}] must be an absolute container path"
+            )
+            raise typer.Exit(1)
+
+        parsed_mounts.append((host_path_expanded, container_path))
+
+    return parsed_mounts
+
+
+def _parse_device_specs(devices: List[str]) -> list[str]:
+    parsed_devices: list[str] = []
+
+    for device_spec_input in devices:
+        device_spec = device_spec_input.strip()
+        if len(device_spec) == 0:
+            logger.error("device spec cannot be empty")
+            raise typer.Exit(1)
+
+        host_device_path = normalize_host_path(device_spec.split(":", 1)[0].strip())
+        if not os.path.exists(host_device_path):
+            logger.error(f"device path [{host_device_path}] does not exist")
+            raise typer.Exit(1)
+
+        parsed_devices.append(device_spec)
+
+    return parsed_devices
+
+
+def _parse_keepalive_args(keepalive_command: Optional[str]) -> list[str]:
+    if keepalive_command is None:
+        return []
+
+    keepalive_args = shlex.split(keepalive_command)
+    if len(keepalive_args) == 0:
+        logger.error("keepalive command cannot be empty")
+        raise typer.Exit(1)
+
+    return keepalive_args
+
+
+def _parse_create_inputs(
+    image_name: str,
+    home_shares: List[str],
+    custom_mounts: List[str],
+    devices: List[str],
+    keepalive_command: Optional[str],
+) -> tuple[list[str], list[tuple[str, str]], list[str], list[tuple[str, str]]]:
+    keepalive_args = _parse_keepalive_args(keepalive_command)
+    custom_mount_specs = _parse_custom_mount_specs(custom_mounts)
+    device_specs = _parse_device_specs(devices)
+    home_share_mount_pairs = _get_home_share_mount_pairs(home_shares, image_name)
+    return keepalive_args, custom_mount_specs, device_specs, home_share_mount_pairs
+
+
 @app.callback()
 def app_callback(
     verbose: List[bool] = typer.Option([], "--verbose", "-v", help="Verbose output"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Quiet output"),
+    runtime: Optional[str] = typer.Option(
+        None,
+        "--runtime",
+        help="container runtime override for this command (podman or docker).",
+    ),
     version: Optional[bool] = typer.Option(
         None, "--version", "-V", callback=version_callback, is_eager=True
     ),
 ):
     configure_logging(len(verbose), quiet)
+    try:
+        set_container_runtime_override(runtime)
+    except ValueError as exc:
+        logger.error(str(exc))
+        raise typer.Exit(1)
 
 
 @app.command(help="build an image from a dockerfile", no_args_is_help=True)
@@ -240,6 +366,12 @@ def create(
         "--mount",
         help="custom mount in format host_path:container_path (e.g., ~/Downloads/stuff:/work/stuff).",
     ),
+    devices: List[str] = typer.Option(
+        [],
+        "-D",
+        "--device",
+        help="device passthrough in format host_device or host_device:container_device.",
+    ),
     host_pid: bool = typer.Option(
         False,
         "--host-pid",
@@ -271,6 +403,16 @@ def create(
     if not image_exists(image_name):
         logger.error(f"image [{image_name}] does not exist")
         raise typer.Exit(1)
+
+    keepalive_args, custom_mount_specs, device_specs, home_share_mount_pairs = (
+        _parse_create_inputs(
+            image_name,
+            home_shares,
+            custom_mounts,
+            devices,
+            keepalive_command,
+        )
+    )
 
     container_data_dir = os.path.join(DATA_DIR, container_name)
     logger.info(f"creating data directory [{container_data_dir}]")
@@ -318,40 +460,19 @@ def create(
             ["-v", f"{mount.source_path}:{mount.container_path}"]
         )
 
-    for home_share_src, home_share_target in _get_home_share_mount_pairs(
-        home_shares, image_name
-    ):
+    for home_share_src, home_share_target in home_share_mount_pairs:
         container_create_opts.extend(["-v", f"{home_share_src}:{home_share_target}"])
 
-    for custom_mount in custom_mounts:
-        if ":" not in custom_mount:
-            logger.error(
-                f"invalid mount format [{custom_mount}], expected host_path:container_path"
-            )
-            raise typer.Exit(1)
-
-        host_path, container_path = custom_mount.split(":", 1)
-
-        host_path_expanded = normalize_host_path(host_path)
-
-        if not os.path.exists(host_path_expanded):
-            logger.error(
-                f"custom mount host path [{host_path_expanded}] does not exist"
-            )
-            raise typer.Exit(1)
-
+    for host_path_expanded, container_path in custom_mount_specs:
         logger.debug(f"adding custom mount: {host_path_expanded}:{container_path}")
         container_create_opts.extend(["-v", f"{host_path_expanded}:{container_path}"])
 
+    for device_spec in device_specs:
+        logger.debug(f"adding device passthrough: {device_spec}")
+        container_create_opts.extend(["--device", device_spec])
+
     for port_bind in port_binds:
         container_create_opts.extend(["-p", port_bind])
-
-    keepalive_args: list[str] = []
-    if keepalive_command is not None:
-        keepalive_args = shlex.split(keepalive_command)
-        if len(keepalive_args) == 0:
-            logger.error("keepalive command cannot be empty")
-            raise typer.Exit(1)
 
     logger.info(f"creating mim container [{container_name}] from image [{image_name}]")
     _run_container_cmd(
@@ -431,6 +552,11 @@ def shell(
         "--as-root",
         help="run shell as root inside the container.",
     ),
+    as_user: bool = typer.Option(
+        False,
+        "--as-user",
+        help="run shell as non-root user inside the container.",
+    ),
 ):
     _require_mim_container(container_name)
 
@@ -452,8 +578,9 @@ def shell(
     container_mounts = get_container_mounts(container_name)
     container_cwd = map_host_path_to_container(host_cwd, container_mounts)
     runtime = get_container_runtime()
+    shell_as_root = _resolve_shell_as_root(container_name, as_root, as_user)
     try:
-        shell_home_dir = get_shell_home_dir(container_name, as_root)
+        shell_home_dir = get_shell_home_dir(container_name, runtime, shell_as_root)
     except ValueError as exc:
         logger.error(str(exc))
         raise typer.Exit(1)
@@ -463,7 +590,7 @@ def shell(
         raise typer.Exit(1)
     shell_env: list[tuple[str, str]] = []
 
-    if not as_root:
+    if not shell_as_root:
         try:
             shell_home_dir, shell_env = prepare_non_root_shell(
                 container_name,
@@ -478,7 +605,7 @@ def shell(
     logger.info(f"getting shell in container [{container_name}]")
     shell_args = ["exec", "-it"]
 
-    if as_root:
+    if shell_as_root:
         logger.debug("running shell as root")
         shell_args.extend(["--user", "0:0"])
     else:
