@@ -37,23 +37,23 @@ uv sync
 ### build a mimchine image
 
 ```sh
-uv run mimchine build -f ./demo/mim_fed.docker -n mim_fed
+uv run mimchine build -f ./demo/mim_fed_demo.docker -n mim_fed_demo
 ```
 
 ### create a mimchine
 
 ```sh
-uv run mimchine create -n mim_fed -H ~/Downloads
+uv run mimchine create -n mim_fed_demo -H ~/Downloads
 ```
 
 ### open a shell in a mimchine
 
 ```sh
-uv run mimchine shell -c mim_fed
+uv run mimchine shell -c mim_fed_demo
 ```
 
 ### destroy a mimchine
 
 ```sh
-uv run mimchine destroy -c mim_fed -f
+uv run mimchine destroy -c mim_fed_demo -f
 ```

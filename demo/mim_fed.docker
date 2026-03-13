@@ -1,27 +1,33 @@
-FROM fedora
+from fedora
 
-# install dependencies
-RUN dnf update -y && dnf install -y \
-  # packages
-  sudo zsh bash curl wget make git gcc \
-  python3 python3-pip python3-devel \
-  # enable rpmfusion free and nonfree
-  https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
-  https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm \
-  && dnf clean all
+arg USER_UID=1000
+arg USER_GID=1000
 
-# cool shell
-RUN git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf && ~/.fzf/install \
-  && sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" \
-  # edit the config to add fzf to plugins
-  && sed -i 's/plugins=(git)/plugins=(fzf)/g' /root/.zshrc \
-  # install zsh-autosuggestions
-  && git clone https://github.com/zsh-users/zsh-autosuggestions /root/.oh-my-zsh/custom/plugins/zsh-autosuggestions \
-  # install zsh-syntax-highlighting
-  && git clone https://github.com/zsh-users/zsh-syntax-highlighting /root/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting \
-  # change the theme
-  && sed -i 's/ZSH_THEME="robbyrussell"/ZSH_THEME="cypher"/g' /root/.zshrc \
-  && echo "Fancy shell installed"
+# install basics
+run dnf update -y && dnf install -y \
+    sudo zsh bash curl wget make git gcc \
+    python3 uv \
+    tmux vim neovim bat fd-find htop fzf ripgrep ranger zstd \
+    && dnf clean all
 
-# wait
-CMD ["tail", "-f", "/dev/null"]
+# normalize uid/gid and allow nopasswd sudo
+run set -eu; \
+    userdel -r user >/dev/null 2>&1 || true; \
+    groupadd -f -g "$USER_GID" user; \
+    useradd -m -s /bin/zsh -u "$USER_UID" -g "$USER_GID" user; \
+    echo "user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/user; \
+    chmod 0440 /etc/sudoers.d/user
+
+# shell defaults
+run printf '%s\n' \
+    'set -o vi' \
+    'alias l="ls -lah"' \
+    'export EDITOR=vim' \
+    > /home/user/.zshrc
+
+run chown -R user:user /home/user
+
+user user
+workdir /home/user
+
+cmd ["tail", "-f", "/dev/null"]
