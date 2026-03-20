@@ -1,5 +1,6 @@
 import os
 import posixpath
+import shutil
 from typing import List
 from dataclasses import dataclass
 
@@ -34,6 +35,31 @@ def get_container_integration_mounts(data_dir) -> List[ContainerIntegrationMount
         )
         for x in CONTAINER_INTEGRATION_MOUNTS
     ]
+
+
+def destroy_container_data_dir(data_dir: str, keep_shell_state: bool):
+    if not keep_shell_state:
+        shutil.rmtree(data_dir)
+        return
+
+    if not os.path.isdir(data_dir):
+        return
+
+    preserved_paths = {
+        os.path.realpath(os.path.abspath(mount.source_path))
+        for mount in get_container_integration_mounts(data_dir)
+        if mount.container_path == CONTAINER_SHELL_STATE_DIR
+    }
+
+    for entry in os.scandir(data_dir):
+        entry_path = os.path.realpath(os.path.abspath(entry.path))
+        if entry_path in preserved_paths:
+            continue
+
+        if entry.is_dir(follow_symlinks=False):
+            shutil.rmtree(entry.path)
+        else:
+            os.unlink(entry.path)
 
 
 def get_home_integration_mount() -> str:

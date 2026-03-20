@@ -1,7 +1,6 @@
 import os
 import posixpath
 import shlex
-import shutil
 from typing import List, Optional
 
 import typer
@@ -28,6 +27,7 @@ from .containers import (
     resolve_image_home,
 )
 from .integration import (
+    destroy_container_data_dir,
     get_container_integration_mounts,
     get_home_integration_mount,
     get_home_integration_env,
@@ -560,6 +560,11 @@ def destroy(
         "--force",
         help="force destroy the container.",
     ),
+    keep_shell_state: bool = typer.Option(
+        False,
+        "--keep-shell-state",
+        help="preserve persisted shell history/state",
+    ),
 ):
     _require_mim_container(container_name)
 
@@ -576,10 +581,15 @@ def destroy(
             logger.error(f"container [{container_name}] is running")
             raise typer.Exit(1)
 
-    logger.info(f"destroying data directory for container [{container_name}]")
     container_data_dir = os.path.join(DATA_DIR, container_name)
+    if keep_shell_state:
+        logger.info(
+            f"destroying data directory for container [{container_name}], preserving shell state"
+        )
+    else:
+        logger.info(f"destroying data directory for container [{container_name}]")
     try:
-        shutil.rmtree(container_data_dir)
+        destroy_container_data_dir(container_data_dir, keep_shell_state)
     except FileNotFoundError:
         logger.debug(f"data directory [{container_data_dir}] already absent")
 
