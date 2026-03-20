@@ -46,6 +46,18 @@ uv run mimchine build -f ./demo/mim_fed.docker -n mim_fed
 uv run mimchine create -n mim_fed -H ~/Downloads
 ```
 
+### export an image
+
+```sh
+uv run mimchine export -n mim_fed -o ~/Downloads/mim_fed.tar.zst
+```
+
+### import an image
+
+```sh
+uv run mimchine import -i ~/Downloads/mim_fed.tar.zst
+```
+
 ### open a shell in a mimchine
 
 ```sh

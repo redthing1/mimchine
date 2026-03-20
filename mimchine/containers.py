@@ -1,5 +1,9 @@
-import sh
 import json
+import os
+import subprocess
+import tempfile
+
+import sh
 
 from .log import logger
 
@@ -9,6 +13,8 @@ SHELL_USER_LABEL_KEY = "mim.shell-user"
 SHELL_USER_ROOT = "root"
 SHELL_USER_USER = "user"
 SUPPORTED_SHELL_USERS = (SHELL_USER_ROOT, SHELL_USER_USER)
+SUPPORTED_IMAGE_ARCHIVE_SUFFIXES = (".tar", ".zst")
+DEFAULT_ZSTD_EXPORT_ARGS = ("-T0", "--long", "-19")
 
 
 def parse_container_json(json_output):
@@ -309,3 +315,255 @@ def resolve_image_home(image_name: str) -> str:
         pass
 
     return "/root"
+
+
+def _normalize_archive_path(archive_path: str) -> str:
+    stripped_archive_path = archive_path.strip()
+    if len(stripped_archive_path) == 0:
+        raise ValueError("archive path cannot be empty")
+
+    normalized_archive_path = os.path.abspath(os.path.expanduser(stripped_archive_path))
+    return normalized_archive_path
+
+
+def is_supported_image_archive_path(archive_path: str) -> bool:
+    normalized_archive_path = archive_path.strip().lower()
+    return normalized_archive_path.endswith(SUPPORTED_IMAGE_ARCHIVE_SUFFIXES)
+
+
+def is_zstd_archive(archive_path: str) -> bool:
+    return archive_path.strip().lower().endswith(".zst")
+
+
+def _validate_image_archive_path(archive_path: str) -> str:
+    normalized_archive_path = _normalize_archive_path(archive_path)
+    if not is_supported_image_archive_path(normalized_archive_path):
+        raise ValueError(
+            f"unsupported archive path [{normalized_archive_path}]. expected a .tar or .zst file"
+        )
+
+    return normalized_archive_path
+
+
+def _require_zstd() -> None:
+    try:
+        sh.Command("zstd")
+    except sh.CommandNotFound as exc:
+        raise ValueError(
+            "zstd not found. please ensure it is installed and in your PATH."
+        ) from exc
+
+
+def _build_runtime_args(*args: str) -> list[str]:
+    runtime = get_container_runtime()
+    try:
+        sh.Command(runtime)
+    except sh.CommandNotFound as exc:
+        raise RuntimeError(
+            f"command [{runtime}] not found. please ensure it is installed and in your PATH."
+        ) from exc
+
+    return [runtime, *args]
+
+
+def _build_image_save_command(image_name: str) -> list[str]:
+    save_args = ["save"]
+
+    if get_container_runtime() == "podman":
+        save_args.extend(["--format", "docker-archive"])
+
+    save_args.append(image_name)
+    return _build_runtime_args(*save_args)
+
+
+def _build_image_load_command(input_path: str | None = None) -> list[str]:
+    load_args = ["load"]
+
+    if input_path is not None:
+        load_args.extend(["--input", input_path])
+
+    return _build_runtime_args(*load_args)
+
+
+def _spawn_process(
+    args: list[str],
+    *,
+    stdin=None,
+    stdout=None,
+):
+    try:
+        return subprocess.Popen(args, stdin=stdin, stdout=stdout)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"command [{args[0]}] not found. please ensure it is installed and in your PATH."
+        ) from exc
+
+
+def _raise_process_failure(error_action: str, return_code: int) -> None:
+    raise RuntimeError(f"{error_action} failed with error code {return_code}")
+
+
+def _run_process(
+    args: list[str],
+    *,
+    error_action: str,
+) -> None:
+    process = _spawn_process(args)
+    return_code = process.wait()
+    if return_code != 0:
+        _raise_process_failure(error_action, return_code)
+
+
+def _run_stream_to_file(
+    args: list[str],
+    output_path: str,
+    *,
+    error_action: str,
+) -> None:
+    with open(output_path, "wb") as archive_file:
+        process = _spawn_process(args, stdout=archive_file)
+        return_code = process.wait()
+
+    if return_code != 0:
+        _raise_process_failure(error_action, return_code)
+
+
+def _run_pipeline(
+    producer_args: list[str],
+    consumer_args: list[str],
+    *,
+    error_action: str,
+) -> None:
+    producer_process = _spawn_process(producer_args, stdout=subprocess.PIPE)
+    assert producer_process.stdout is not None
+
+    consumer_process = _spawn_process(consumer_args, stdin=producer_process.stdout)
+    producer_process.stdout.close()
+
+    consumer_return_code = consumer_process.wait()
+    producer_return_code = producer_process.wait()
+
+    if consumer_return_code != 0:
+        _raise_process_failure(error_action, consumer_return_code)
+
+    if producer_return_code != 0:
+        _raise_process_failure(error_action, producer_return_code)
+
+
+def _run_pipeline_to_file(
+    producer_args: list[str],
+    consumer_args: list[str],
+    output_path: str,
+    *,
+    error_action: str,
+) -> None:
+    with open(output_path, "wb") as archive_file:
+        producer_process = _spawn_process(producer_args, stdout=subprocess.PIPE)
+        assert producer_process.stdout is not None
+
+        consumer_process = _spawn_process(
+            consumer_args,
+            stdin=producer_process.stdout,
+            stdout=archive_file,
+        )
+        producer_process.stdout.close()
+
+        consumer_return_code = consumer_process.wait()
+        producer_return_code = producer_process.wait()
+
+    if consumer_return_code != 0:
+        _raise_process_failure(error_action, consumer_return_code)
+
+    if producer_return_code != 0:
+        _raise_process_failure(error_action, producer_return_code)
+
+
+def _create_temp_output_path(output_path: str) -> str:
+    output_dir = os.path.dirname(output_path) or "."
+    if not os.path.isdir(output_dir):
+        raise ValueError(f"output directory [{output_dir}] does not exist")
+
+    file_descriptor, temp_output_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(output_path)}.",
+        suffix=".tmp",
+        dir=output_dir,
+    )
+    os.close(file_descriptor)
+    os.unlink(temp_output_path)
+    return temp_output_path
+
+
+def _cleanup_temp_path(temp_output_path: str) -> None:
+    try:
+        os.remove(temp_output_path)
+    except FileNotFoundError:
+        pass
+
+
+def export_image_archive(
+    image_name: str,
+    output_path: str,
+    *,
+    force: bool = False,
+) -> None:
+    normalized_image_name = image_name.strip()
+    if len(normalized_image_name) == 0:
+        raise ValueError("image name cannot be empty")
+
+    normalized_output_path = _validate_image_archive_path(output_path)
+    if os.path.isdir(normalized_output_path):
+        raise ValueError(
+            f"archive output path [{normalized_output_path}] is a directory"
+        )
+
+    if os.path.exists(normalized_output_path) and not force:
+        raise ValueError(
+            f"archive [{normalized_output_path}] already exists. use --force to overwrite it"
+        )
+
+    temp_output_path = _create_temp_output_path(normalized_output_path)
+    save_command = _build_image_save_command(normalized_image_name)
+
+    try:
+        if is_zstd_archive(normalized_output_path):
+            _require_zstd()
+            _run_pipeline_to_file(
+                save_command,
+                ["zstd", *DEFAULT_ZSTD_EXPORT_ARGS],
+                temp_output_path,
+                error_action="image export",
+            )
+        else:
+            _run_stream_to_file(
+                save_command,
+                temp_output_path,
+                error_action="image export",
+            )
+
+        os.replace(temp_output_path, normalized_output_path)
+    except Exception:
+        _cleanup_temp_path(temp_output_path)
+        raise
+
+
+def import_image_archive(input_path: str) -> None:
+    normalized_input_path = _validate_image_archive_path(input_path)
+    if not os.path.exists(normalized_input_path):
+        raise ValueError(f"archive [{normalized_input_path}] does not exist")
+
+    if not os.path.isfile(normalized_input_path):
+        raise ValueError(f"archive [{normalized_input_path}] is not a file")
+
+    if is_zstd_archive(normalized_input_path):
+        _require_zstd()
+        _run_pipeline(
+            ["zstd", "-d", "-c", normalized_input_path],
+            _build_image_load_command(),
+            error_action="image import",
+        )
+        return
+
+    _run_process(
+        _build_image_load_command(normalized_input_path),
+        error_action="image import",
+    )

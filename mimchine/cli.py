@@ -22,6 +22,8 @@ from .containers import (
     container_is_mim,
     container_is_running,
     image_exists,
+    import_image_archive,
+    export_image_archive,
     resolve_container_shell_user,
     resolve_image_home,
 )
@@ -332,6 +334,64 @@ def build(
     )
 
     logger.info(f"build complete, image [{image_name}] created")
+
+
+@app.command(help="export an image to a tar or zstd archive", no_args_is_help=True)
+def export(
+    image_name: str = typer.Option(
+        ...,
+        "-n",
+        "--image-name",
+        help="name of the image to export.",
+    ),
+    output_path: str = typer.Option(
+        ...,
+        "-o",
+        "--output",
+        help="path to the output archive (.tar or .zst).",
+    ),
+    force: bool = typer.Option(
+        False,
+        "-f",
+        "--force",
+        help="overwrite an existing output archive.",
+    ),
+):
+    if not image_exists(image_name):
+        logger.error(f"image [{image_name}] does not exist")
+        raise typer.Exit(1)
+
+    logger.info(f"exporting image [{image_name}] to [{output_path}]")
+    try:
+        export_image_archive(image_name, output_path, force=force)
+    except (ValueError, RuntimeError) as exc:
+        logger.error(str(exc))
+        raise typer.Exit(1)
+
+    logger.info(f"image [{image_name}] exported to [{output_path}]")
+
+
+@app.command(
+    name="import",
+    help="import an image from a tar or zstd archive",
+    no_args_is_help=True,
+)
+def import_image(
+    input_path: str = typer.Option(
+        ...,
+        "-i",
+        "--input",
+        help="path to the input archive (.tar or .zst).",
+    ),
+):
+    logger.info(f"importing image archive [{input_path}]")
+    try:
+        import_image_archive(input_path)
+    except (ValueError, RuntimeError) as exc:
+        logger.error(str(exc))
+        raise typer.Exit(1)
+
+    logger.info(f"image archive [{input_path}] imported")
 
 
 @app.command(help="create a container from an image", no_args_is_help=True)
