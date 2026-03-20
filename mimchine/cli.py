@@ -1,6 +1,7 @@
 import os
 import posixpath
 import shlex
+from dataclasses import dataclass
 from typing import List, Optional
 
 import typer
@@ -13,6 +14,7 @@ from . import output
 
 from .containers import (
     CONTAINER_CMD,
+    ImageIdentity,
     SHELL_USER_ROOT,
     get_containers,
     get_container_display_name,
@@ -24,7 +26,8 @@ from .containers import (
     import_image_archive,
     export_image_archive,
     resolve_container_shell_user,
-    resolve_image_home,
+    resolve_image_identity,
+    ensure_runtime_supports_containers,
 )
 from .integration import (
     destroy_container_data_dir,
@@ -58,6 +61,15 @@ FORMAT_CONTAINER_OUTPUT = {
     "_out": output.stream_stdout,
     "_err": output.stream_stderr,
 }
+
+
+@dataclass(frozen=True)
+class CreateInputs:
+    image_identity: ImageIdentity
+    keepalive_args: list[str]
+    custom_mount_specs: list[tuple[str, str]]
+    device_specs: list[str]
+    home_share_mount_pairs: list[tuple[str, str]]
 
 
 def version_callback(value: bool):
@@ -126,15 +138,22 @@ def _resolve_shell_as_root(
     return False
 
 
+def _ensure_runtime_supports_containers_or_exit() -> None:
+    try:
+        ensure_runtime_supports_containers()
+    except RuntimeError as exc:
+        logger.error(str(exc))
+        raise typer.Exit(1)
+
+
 def _get_home_share_mount_pairs(
     home_shares: List[str],
-    image_name: str,
+    image_home_dir: str,
 ) -> list[tuple[str, str]]:
     if len(home_shares) == 0:
         return []
 
     user_home_dir = normalize_host_path(get_home_dir())
-    image_home_dir = resolve_image_home(image_name)
     mounted_pairs: set[tuple[str, str]] = set()
     mount_pairs: list[tuple[str, str]] = []
 
@@ -249,12 +268,22 @@ def _parse_create_inputs(
     custom_mounts: List[str],
     devices: List[str],
     keepalive_command: Optional[str],
-) -> tuple[list[str], list[tuple[str, str]], list[str], list[tuple[str, str]]]:
+) -> CreateInputs:
+    image_identity = resolve_image_identity(image_name)
     keepalive_args = _parse_keepalive_args(keepalive_command)
     custom_mount_specs = _parse_custom_mount_specs(custom_mounts)
     device_specs = _parse_device_specs(devices)
-    home_share_mount_pairs = _get_home_share_mount_pairs(home_shares, image_name)
-    return keepalive_args, custom_mount_specs, device_specs, home_share_mount_pairs
+    home_share_mount_pairs = _get_home_share_mount_pairs(
+        home_shares,
+        image_identity.home_dir,
+    )
+    return CreateInputs(
+        image_identity=image_identity,
+        keepalive_args=keepalive_args,
+        custom_mount_specs=custom_mount_specs,
+        device_specs=device_specs,
+        home_share_mount_pairs=home_share_mount_pairs,
+    )
 
 
 @app.callback()
@@ -309,6 +338,8 @@ def build(
         help="set build-time variables.",
     ),
 ):
+    _ensure_runtime_supports_containers_or_exit()
+
     logger.info(f"building docker image from [{dockerfile}]")
 
     build_cmd_args = [
@@ -464,15 +495,17 @@ def create(
         logger.error(f"image [{image_name}] does not exist")
         raise typer.Exit(1)
 
-    keepalive_args, custom_mount_specs, device_specs, home_share_mount_pairs = (
-        _parse_create_inputs(
+    try:
+        create_inputs = _parse_create_inputs(
             image_name,
             home_shares,
             custom_mounts,
             devices,
             keepalive_command,
         )
-    )
+    except (ValueError, RuntimeError) as exc:
+        logger.error(str(exc))
+        raise typer.Exit(1)
 
     container_data_dir = os.path.join(DATA_DIR, container_name)
     logger.info(f"creating data directory [{container_data_dir}]")
@@ -487,7 +520,13 @@ def create(
     ]
 
     if get_container_runtime() == "podman":
-        container_create_opts.extend(["--userns", "keep-id"])
+        image_identity = create_inputs.image_identity
+        container_create_opts.extend(
+            [
+                "--userns",
+                f"keep-id:uid={image_identity.uid},gid={image_identity.gid}",
+            ]
+        )
 
     if host_pid:
         container_create_opts.append("--pid=host")
@@ -520,14 +559,14 @@ def create(
             ["-v", f"{mount.source_path}:{mount.container_path}"]
         )
 
-    for home_share_src, home_share_target in home_share_mount_pairs:
+    for home_share_src, home_share_target in create_inputs.home_share_mount_pairs:
         container_create_opts.extend(["-v", f"{home_share_src}:{home_share_target}"])
 
-    for host_path_expanded, container_path in custom_mount_specs:
+    for host_path_expanded, container_path in create_inputs.custom_mount_specs:
         logger.debug(f"adding custom mount: {host_path_expanded}:{container_path}")
         container_create_opts.extend(["-v", f"{host_path_expanded}:{container_path}"])
 
-    for device_spec in device_specs:
+    for device_spec in create_inputs.device_specs:
         logger.debug(f"adding device passthrough: {device_spec}")
         container_create_opts.extend(["--device", device_spec])
 
@@ -539,7 +578,7 @@ def create(
         "create",
         *container_create_opts,
         image_name,
-        *keepalive_args,
+        *create_inputs.keepalive_args,
         error_action="create",
         format_output=True,
     )
@@ -632,6 +671,7 @@ def shell(
 
     if not container_is_running(container_name):
         logger.info(f"container [{container_name}] is not running, starting it")
+        _ensure_runtime_supports_containers_or_exit()
         _run_container_cmd(
             "start",
             container_name,
@@ -719,6 +759,7 @@ def start(
         return
 
     logger.info(f"starting container [{container_name}]")
+    _ensure_runtime_supports_containers_or_exit()
     _run_container_cmd(
         "start",
         container_name,

@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import tempfile
+from dataclasses import dataclass
 
 import sh
 
@@ -15,6 +16,13 @@ SHELL_USER_USER = "user"
 SUPPORTED_SHELL_USERS = (SHELL_USER_ROOT, SHELL_USER_USER)
 SUPPORTED_IMAGE_ARCHIVE_SUFFIXES = (".tar", ".zst")
 DEFAULT_ZSTD_EXPORT_ARGS = ("-T0", "--long", "-19")
+
+
+@dataclass(frozen=True)
+class ImageIdentity:
+    home_dir: str
+    uid: int
+    gid: int
 
 
 def parse_container_json(json_output):
@@ -54,6 +62,65 @@ class _LazyContainerCommand:
 
 
 CONTAINER_CMD = _LazyContainerCommand()
+
+
+def _run_container_capture(*args: str) -> str:
+    cmd = CONTAINER_CMD.bake(*args)
+    logger.debug(f"running command: {cmd}")
+    return str(cmd())
+
+
+def _get_podman_info() -> dict:
+    try:
+        info_output = _run_container_capture("info", "--format", "json").strip()
+    except sh.ErrorReturnCode as exc:
+        raise RuntimeError(
+            f"could not inspect podman runtime state (exit code {exc.exit_code})"
+        ) from exc
+
+    try:
+        info = json.loads(info_output)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("podman info returned invalid JSON") from exc
+
+    if not isinstance(info, dict):
+        raise RuntimeError("podman info returned unexpected data")
+
+    return info
+
+
+def ensure_runtime_supports_containers() -> None:
+    if get_container_runtime() != "podman":
+        return
+
+    info = _get_podman_info()
+    host = info.get("host", {})
+    if not isinstance(host, dict):
+        raise RuntimeError("podman info missing host metadata")
+
+    security = host.get("security", {})
+    if not isinstance(security, dict):
+        security = {}
+
+    if not bool(security.get("rootless")):
+        return
+
+    slirp4netns = host.get("slirp4netns", {})
+    pasta = host.get("pasta", {})
+    if not isinstance(slirp4netns, dict):
+        slirp4netns = {}
+    if not isinstance(pasta, dict):
+        pasta = {}
+
+    if str(slirp4netns.get("executable", "")).strip():
+        return
+
+    if str(pasta.get("executable", "")).strip():
+        return
+
+    raise RuntimeError(
+        "podman is running rootless but neither slirp4netns nor pasta is installed. install one of them so rootless containers can start."
+    )
 
 
 def _supports_image_exists():
@@ -297,7 +364,8 @@ def image_exists(image_name):
         return _image_exists_docker(image_name)
 
 
-def resolve_image_home(image_name: str) -> str:
+def _probe_image_identity_output(image_name: str) -> str:
+    ensure_runtime_supports_containers()
     probe_cmd = CONTAINER_CMD.bake(
         "run",
         "--rm",
@@ -305,16 +373,44 @@ def resolve_image_home(image_name: str) -> str:
         "sh",
         image_name,
         "-lc",
-        'printf "%s" "${HOME:-}"',
+        'printf "%s\\n%s\\n%s\\n" "${HOME:-}" "$(id -u)" "$(id -g)"',
     )
     try:
-        output = str(probe_cmd()).strip()
-        if output:
-            return output
-    except sh.ErrorReturnCode:
-        pass
+        logger.debug(f"running command: {probe_cmd}")
+        return str(probe_cmd())
+    except sh.ErrorReturnCode as exc:
+        raise RuntimeError(
+            f"could not probe default identity for image [{image_name}] (exit code {exc.exit_code})"
+        ) from exc
 
-    return "/root"
+
+def resolve_image_identity(image_name: str) -> ImageIdentity:
+    probe_lines = _probe_image_identity_output(image_name).splitlines()
+    if len(probe_lines) != 3:
+        raise RuntimeError(
+            f"image [{image_name}] returned unexpected identity probe output"
+        )
+
+    home_dir, uid_text, gid_text = [line.strip() for line in probe_lines]
+    if len(home_dir) == 0 or not home_dir.startswith("/"):
+        raise RuntimeError(
+            f"image [{image_name}] reported invalid home directory [{home_dir}]"
+        )
+
+    try:
+        uid = int(uid_text)
+        gid = int(gid_text)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"image [{image_name}] reported invalid uid/gid [{uid_text}:{gid_text}]"
+        ) from exc
+
+    if uid < 0 or gid < 0:
+        raise RuntimeError(
+            f"image [{image_name}] reported negative uid/gid [{uid}:{gid}]"
+        )
+
+    return ImageIdentity(home_dir=home_dir, uid=uid, gid=gid)
 
 
 def _normalize_archive_path(archive_path: str) -> str:
