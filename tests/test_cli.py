@@ -41,6 +41,7 @@ class CreateCommandTests(unittest.TestCase):
                     custom_mounts=[],
                     devices=[],
                     host_pid=False,
+                    host_net=False,
                     privileged=False,
                     keepalive_command=None,
                     integrate_home=False,
@@ -71,6 +72,80 @@ class CreateCommandTests(unittest.TestCase):
                     "format_output": True,
                 },
             )
+
+    def test_create_adds_host_network(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = os.path.join(temp_dir, "data")
+
+            with (
+                patch("mimchine.cli.DATA_DIR", data_dir),
+                patch("mimchine.cli.container_exists", return_value=False),
+                patch("mimchine.cli.image_exists", return_value=True),
+                patch("mimchine.cli.get_container_runtime", return_value="podman"),
+                patch(
+                    "mimchine.cli.resolve_image_identity",
+                    return_value=containers.ImageIdentity(
+                        home_dir="/home/user",
+                        uid=1000,
+                        gid=1000,
+                    ),
+                ),
+                patch("mimchine.cli.get_container_integration_mounts", return_value=[]),
+                patch("mimchine.cli._run_container_cmd") as run_container_cmd,
+            ):
+                cli.create(
+                    image_name="example",
+                    container_name="example",
+                    home_shares=[],
+                    port_binds=[],
+                    custom_mounts=[],
+                    devices=[],
+                    host_pid=False,
+                    host_net=True,
+                    privileged=False,
+                    keepalive_command=None,
+                    integrate_home=False,
+                )
+
+            self.assertEqual(
+                run_container_cmd.call_args.args,
+                (
+                    "create",
+                    "--name",
+                    "example",
+                    "--init",
+                    "--label",
+                    "mim=1",
+                    "--userns",
+                    "keep-id:uid=1000,gid=1000",
+                    "--network=host",
+                    "example",
+                ),
+            )
+
+    def test_create_rejects_host_network_with_port_binds(self):
+        with (
+            patch("mimchine.cli.container_exists", return_value=False),
+            patch("mimchine.cli.image_exists", return_value=True),
+            patch("mimchine.cli._run_container_cmd") as run_container_cmd,
+        ):
+            with self.assertRaises(typer.Exit) as exc:
+                cli.create(
+                    image_name="example",
+                    container_name="example",
+                    home_shares=[],
+                    port_binds=["8080:80"],
+                    custom_mounts=[],
+                    devices=[],
+                    host_pid=False,
+                    host_net=True,
+                    privileged=False,
+                    keepalive_command=None,
+                    integrate_home=False,
+                )
+
+        self.assertEqual(exc.exception.exit_code, 1)
+        run_container_cmd.assert_not_called()
 
 
 class StartCommandTests(unittest.TestCase):

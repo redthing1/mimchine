@@ -262,6 +262,26 @@ def _parse_keepalive_args(keepalive_command: Optional[str]) -> list[str]:
     return keepalive_args
 
 
+def _validate_create_network_options(host_net: bool, port_binds: List[str]) -> None:
+    if host_net and len(port_binds) > 0:
+        logger.error(
+            "cannot use --host-net with --port-bind; host networking does not use port publishing"
+        )
+        raise typer.Exit(1)
+
+
+def _get_namespace_create_opts(host_pid: bool, host_net: bool) -> list[str]:
+    opts: list[str] = []
+
+    if host_pid:
+        opts.append("--pid=host")
+
+    if host_net:
+        opts.append("--network=host")
+
+    return opts
+
+
 def _parse_create_inputs(
     image_name: str,
     home_shares: List[str],
@@ -468,6 +488,11 @@ def create(
         "--host-pid",
         help="share the host's PID namespace with the container.",
     ),
+    host_net: bool = typer.Option(
+        False,
+        "--host-net",
+        help="share the host's network namespace with the container.",
+    ),
     privileged: bool = typer.Option(
         False,
         "--privileged",
@@ -494,6 +519,8 @@ def create(
     if not image_exists(image_name):
         logger.error(f"image [{image_name}] does not exist")
         raise typer.Exit(1)
+
+    _validate_create_network_options(host_net, port_binds)
 
     try:
         create_inputs = _parse_create_inputs(
@@ -528,8 +555,7 @@ def create(
             ]
         )
 
-    if host_pid:
-        container_create_opts.append("--pid=host")
+    container_create_opts.extend(_get_namespace_create_opts(host_pid, host_net))
 
     if privileged:
         container_create_opts.append("--privileged")
