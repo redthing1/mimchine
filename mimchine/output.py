@@ -30,3 +30,29 @@ def print_container_list(rows: list[tuple[str, str]]) -> None:
         table.add_row(name, state)
 
     _stdout.print(table)
+
+
+def print_key_value_table(title: str, rows: list[tuple[str, str]]) -> None:
+    table = Table(title=title)
+    table.add_column("field", style="cyan")
+    table.add_column("value", style="green")
+
+    for key, value in rows:
+        table.add_row(key, value)
+
+    _stdout.print(table)
+
+
+def print_table(title: str, columns: list[str], rows: list[tuple[str, ...]]) -> None:
+    if len(rows) == 0:
+        _stdout.print(f"{title}: none", markup=False, highlight=False)
+        return
+
+    table = Table(title=title)
+    for column in columns:
+        table.add_column(column)
+
+    for row in rows:
+        table.add_row(*row)
+
+    _stdout.print(table)

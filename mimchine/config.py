@@ -144,4 +144,15 @@ def validate_config(config: Dict[str, Any]) -> bool:
                 )
                 return False
 
+    if "profiles" in config:
+        profiles_config = config["profiles"]
+        if not isinstance(profiles_config, dict):
+            return False
+
+        for profile_name, profile_config in profiles_config.items():
+            if not isinstance(profile_name, str) or not isinstance(
+                profile_config, dict
+            ):
+                return False
+
     return True

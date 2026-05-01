@@ -1,7 +1,5 @@
 import os
-import posixpath
 import shlex
-from dataclasses import dataclass
 from typing import List, Optional
 
 import typer
@@ -9,16 +7,24 @@ import sh
 
 from . import __VERSION__
 from .config import get_container_runtime, set_container_runtime_override
+from .create_config import (
+    CreateConfig,
+    apply_profile,
+    get_namespace_create_opts,
+    preflight_create_config,
+    resolve_create_config,
+)
 from .log import configure_logging, logger
 from . import output
+from .profiles import load_profile
 
 from .containers import (
     CONTAINER_CMD,
-    ImageIdentity,
     SHELL_USER_ROOT,
     get_containers,
     get_container_display_name,
     get_container_mounts,
+    get_container_inspect,
     container_exists,
     container_is_mim,
     container_is_running,
@@ -34,15 +40,14 @@ from .integration import (
     get_container_integration_mounts,
     get_home_integration_mount,
     get_home_integration_env,
-    get_home_dir,
     get_app_data_dir,
     map_host_path_to_container,
 )
+from .inspection import build_container_inspection
 from .shell_helpers import (
     get_shell_home_dir,
     get_non_root_shell_identity_args,
     prepare_non_root_shell,
-    normalize_host_path,
 )
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
@@ -61,15 +66,6 @@ FORMAT_CONTAINER_OUTPUT = {
     "_out": output.stream_stdout,
     "_err": output.stream_stderr,
 }
-
-
-@dataclass(frozen=True)
-class CreateInputs:
-    image_identity: ImageIdentity
-    keepalive_args: list[str]
-    custom_mount_specs: list[tuple[str, str]]
-    device_specs: list[str]
-    home_share_mount_pairs: list[tuple[str, str]]
 
 
 def version_callback(value: bool):
@@ -146,164 +142,43 @@ def _ensure_runtime_supports_containers_or_exit() -> None:
         raise typer.Exit(1)
 
 
-def _get_home_share_mount_pairs(
-    home_shares: List[str],
-    image_home_dir: str,
-) -> list[tuple[str, str]]:
-    if len(home_shares) == 0:
-        return []
+def _load_profile_or_exit(profile_name: str | None):
+    if profile_name is None:
+        return None
 
-    user_home_dir = normalize_host_path(get_home_dir())
-    mounted_pairs: set[tuple[str, str]] = set()
-    mount_pairs: list[tuple[str, str]] = []
-
-    for home_share_input in home_shares:
-        home_share_src_abs = normalize_host_path(home_share_input)
-
-        if not os.path.exists(home_share_src_abs):
-            logger.warn(f"home share [{home_share_src_abs}] does not exist, skipping")
-            continue
-
-        if os.path.commonpath([home_share_src_abs, user_home_dir]) != user_home_dir:
-            logger.warn(
-                f"home share [{home_share_src_abs}] is not under the user's home directory, skipping"
-            )
-            continue
-
-        home_share_pair = (home_share_src_abs, home_share_src_abs)
-        if home_share_pair not in mounted_pairs:
-            mount_pairs.append(home_share_pair)
-            mounted_pairs.add(home_share_pair)
-
-        home_share_src_rel = os.path.relpath(home_share_src_abs, user_home_dir)
-        if home_share_src_rel == ".":
-            home_share_tilde_target = image_home_dir
-        else:
-            home_share_tilde_target = posixpath.join(
-                image_home_dir, home_share_src_rel.replace("\\", "/")
-            )
-
-        home_share_tilde_pair = (home_share_src_abs, home_share_tilde_target)
-        if home_share_tilde_pair[1] != home_share_tilde_pair[0]:
-            if home_share_tilde_pair not in mounted_pairs:
-                mount_pairs.append(home_share_tilde_pair)
-                mounted_pairs.add(home_share_tilde_pair)
-
-    return mount_pairs
-
-
-def _parse_custom_mount_specs(
-    custom_mounts: List[str],
-) -> list[tuple[str, str]]:
-    parsed_mounts: list[tuple[str, str]] = []
-
-    for custom_mount in custom_mounts:
-        if ":" not in custom_mount:
-            logger.error(
-                f"invalid mount format [{custom_mount}], expected host_path:container_path"
-            )
-            raise typer.Exit(1)
-
-        host_path, container_path = custom_mount.split(":", 1)
-        host_path_expanded = normalize_host_path(host_path)
-        container_path = container_path.strip()
-
-        if not os.path.exists(host_path_expanded):
-            logger.error(
-                f"custom mount host path [{host_path_expanded}] does not exist"
-            )
-            raise typer.Exit(1)
-
-        if len(container_path) == 0:
-            logger.error(
-                f"custom mount [{custom_mount}] has empty container path target"
-            )
-            raise typer.Exit(1)
-
-        if not container_path.startswith("/"):
-            logger.error(
-                f"custom mount target [{container_path}] must be an absolute container path"
-            )
-            raise typer.Exit(1)
-
-        parsed_mounts.append((host_path_expanded, container_path))
-
-    return parsed_mounts
-
-
-def _parse_device_specs(devices: List[str]) -> list[str]:
-    parsed_devices: list[str] = []
-
-    for device_spec_input in devices:
-        device_spec = device_spec_input.strip()
-        if len(device_spec) == 0:
-            logger.error("device spec cannot be empty")
-            raise typer.Exit(1)
-
-        host_device_path = normalize_host_path(device_spec.split(":", 1)[0].strip())
-        if not os.path.exists(host_device_path):
-            logger.error(f"device path [{host_device_path}] does not exist")
-            raise typer.Exit(1)
-
-        parsed_devices.append(device_spec)
-
-    return parsed_devices
-
-
-def _parse_keepalive_args(keepalive_command: Optional[str]) -> list[str]:
-    if keepalive_command is None:
-        return []
-
-    keepalive_args = shlex.split(keepalive_command)
-    if len(keepalive_args) == 0:
-        logger.error("keepalive command cannot be empty")
-        raise typer.Exit(1)
-
-    return keepalive_args
-
-
-def _validate_create_network_options(host_net: bool, port_binds: List[str]) -> None:
-    if host_net and len(port_binds) > 0:
-        logger.error(
-            "cannot use --host-net with --port-bind; host networking does not use port publishing"
-        )
+    try:
+        return load_profile(profile_name)
+    except ValueError as exc:
+        logger.error(str(exc))
         raise typer.Exit(1)
 
 
-def _get_namespace_create_opts(host_pid: bool, host_net: bool) -> list[str]:
-    opts: list[str] = []
-
-    if host_pid:
-        opts.append("--pid=host")
-
-    if host_net:
-        opts.append("--network=host")
-
-    return opts
-
-
-def _parse_create_inputs(
-    image_name: str,
+def _build_create_config(
+    profile_name: str | None,
     home_shares: List[str],
-    custom_mounts: List[str],
+    mounts: List[str],
+    workspaces: List[str],
+    port_binds: List[str],
     devices: List[str],
-    keepalive_command: Optional[str],
-) -> CreateInputs:
-    image_identity = resolve_image_identity(image_name)
-    keepalive_args = _parse_keepalive_args(keepalive_command)
-    custom_mount_specs = _parse_custom_mount_specs(custom_mounts)
-    device_specs = _parse_device_specs(devices)
-    home_share_mount_pairs = _get_home_share_mount_pairs(
-        home_shares,
-        image_identity.home_dir,
+    host_pid: bool,
+    network: str | None,
+    privileged: bool,
+    keepalive_command: str | None,
+    integrate_home: bool,
+) -> CreateConfig:
+    config = CreateConfig(
+        home_shares=tuple(home_shares),
+        mounts=tuple(mounts),
+        workspaces=tuple(workspaces),
+        port_binds=tuple(port_binds),
+        devices=tuple(devices),
+        host_pid=host_pid,
+        network=network,
+        privileged=privileged,
+        keepalive_command=keepalive_command,
+        integrate_home=integrate_home,
     )
-    return CreateInputs(
-        image_identity=image_identity,
-        keepalive_args=keepalive_args,
-        custom_mount_specs=custom_mount_specs,
-        device_specs=device_specs,
-        home_share_mount_pairs=home_share_mount_pairs,
-    )
+    return apply_profile(config, _load_profile_or_exit(profile_name))
 
 
 @app.callback()
@@ -445,70 +320,44 @@ def import_image(
     logger.info(f"image archive [{input_path}] imported")
 
 
-@app.command(help="create a container from an image", no_args_is_help=True)
-def create(
-    image_name: str = typer.Option(
-        ...,
-        "-n",
-        "--image-name",
-        help="name of the image to run.",
-    ),
-    container_name: str = typer.Option(
-        None,
-        "-c",
-        "--container-name",
-        help="name to give the container.",
-    ),
-    home_shares: List[str] = typer.Option(
-        [],
-        "-H",
-        "--home-share",
-        help="passthrough mount under host home; available at identical path and under container HOME.",
-    ),
-    port_binds: List[str] = typer.Option(
-        [],
-        "-p",
-        "--port-bind",
-        help="port to bind from the host to the container.",
-    ),
-    custom_mounts: List[str] = typer.Option(
-        [],
-        "-M",
-        "--mount",
-        help="custom mount in format host_path:container_path.",
-    ),
-    devices: List[str] = typer.Option(
-        [],
-        "-D",
-        "--device",
-        help="device passthrough in format host_device or host_device:container_device.",
-    ),
-    host_pid: bool = typer.Option(
-        False,
-        "--host-pid",
-        help="share the host's PID namespace with the container.",
-    ),
-    host_net: bool = typer.Option(
-        False,
-        "--host-net",
-        help="share the host's network namespace with the container.",
-    ),
-    privileged: bool = typer.Option(
-        False,
-        "--privileged",
-        help="run the container in privileged mode.",
-    ),
-    keepalive_command: Optional[str] = typer.Option(
-        None,
-        "--keepalive-command",
-        help="override the image command used as pid 1.",
-    ),
-    integrate_home: bool = typer.Option(
-        False,
-        "--integrate-home",
-        help="mount full host home under /mim/home/<user> and set HOST_HOME.",
-    ),
-):
+def _ensure_integration_mount_source(mount) -> None:
+    if mount.is_file:
+        source_dir = os.path.dirname(mount.source_path)
+        if source_dir:
+            os.makedirs(source_dir, exist_ok=True)
+        if not os.path.exists(mount.source_path):
+            logger.trace(
+                f"integration mount source [{mount.source_path}] does not exist, "
+                "creating empty file"
+            )
+            open(mount.source_path, "a").close()
+            os.chmod(mount.source_path, 0o777)
+        return
+
+    if not os.path.exists(mount.source_path):
+        logger.trace(
+            f"integration mount source [{mount.source_path}] does not exist, "
+            "creating directory"
+        )
+        os.makedirs(mount.source_path, exist_ok=True)
+
+
+def _append_integration_mounts(
+    container_create_opts: list[str],
+    container_data_dir: str,
+) -> None:
+    for mount in get_container_integration_mounts(container_data_dir):
+        _ensure_integration_mount_source(mount)
+        container_create_opts.extend(
+            ["-v", f"{mount.source_path}:{mount.container_path}:rw"]
+        )
+
+
+def _create_container(
+    image_name: str,
+    container_name: str | None,
+    config: CreateConfig,
+) -> str:
     if container_name is None:
         container_name = image_name
 
@@ -520,16 +369,10 @@ def create(
         logger.error(f"image [{image_name}] does not exist")
         raise typer.Exit(1)
 
-    _validate_create_network_options(host_net, port_binds)
-
     try:
-        create_inputs = _parse_create_inputs(
-            image_name,
-            home_shares,
-            custom_mounts,
-            devices,
-            keepalive_command,
-        )
+        preflight_create_config(config)
+        image_identity = resolve_image_identity(image_name)
+        resolved_config = resolve_create_config(config, image_identity.home_dir)
     except (ValueError, RuntimeError) as exc:
         logger.error(str(exc))
         raise typer.Exit(1)
@@ -547,7 +390,6 @@ def create(
     ]
 
     if get_container_runtime() == "podman":
-        image_identity = create_inputs.image_identity
         container_create_opts.extend(
             [
                 "--userns",
@@ -555,48 +397,28 @@ def create(
             ]
         )
 
-    container_create_opts.extend(_get_namespace_create_opts(host_pid, host_net))
+    container_create_opts.extend(
+        get_namespace_create_opts(resolved_config.host_pid, resolved_config.network)
+    )
 
-    if privileged:
+    if resolved_config.privileged:
         container_create_opts.append("--privileged")
 
-    if integrate_home:
-        container_create_opts.extend(["-v", get_home_integration_mount()])
+    if resolved_config.integrate_home:
+        container_create_opts.extend(["-v", f"{get_home_integration_mount()}:rw"])
         container_create_opts.extend(["-e", get_home_integration_env()])
 
-    for mount in get_container_integration_mounts(container_data_dir):
-        if mount.is_file:
-            source_dir = os.path.dirname(mount.source_path)
-            if source_dir:
-                os.makedirs(source_dir, exist_ok=True)
-            if not os.path.exists(mount.source_path):
-                logger.trace(
-                    f"integration mount source [{mount.source_path}] does not exist, creating empty file"
-                )
-                open(mount.source_path, "a").close()
-                os.chmod(mount.source_path, 0o777)
-        elif not os.path.exists(mount.source_path):
-            logger.trace(
-                f"integration mount source [{mount.source_path}] does not exist, creating directory"
-            )
-            os.makedirs(mount.source_path, exist_ok=True)
+    _append_integration_mounts(container_create_opts, container_data_dir)
 
-        container_create_opts.extend(
-            ["-v", f"{mount.source_path}:{mount.container_path}"]
-        )
+    for mount in resolved_config.mounts:
+        logger.debug(f"adding mount: {mount.volume_arg()}")
+        container_create_opts.extend(["-v", mount.volume_arg()])
 
-    for home_share_src, home_share_target in create_inputs.home_share_mount_pairs:
-        container_create_opts.extend(["-v", f"{home_share_src}:{home_share_target}"])
-
-    for host_path_expanded, container_path in create_inputs.custom_mount_specs:
-        logger.debug(f"adding custom mount: {host_path_expanded}:{container_path}")
-        container_create_opts.extend(["-v", f"{host_path_expanded}:{container_path}"])
-
-    for device_spec in create_inputs.device_specs:
+    for device_spec in resolved_config.device_specs:
         logger.debug(f"adding device passthrough: {device_spec}")
         container_create_opts.extend(["--device", device_spec])
 
-    for port_bind in port_binds:
+    for port_bind in resolved_config.port_binds:
         container_create_opts.extend(["-p", port_bind])
 
     logger.info(f"creating mim container [{container_name}] from image [{image_name}]")
@@ -604,11 +426,110 @@ def create(
         "create",
         *container_create_opts,
         image_name,
-        *create_inputs.keepalive_args,
+        *resolved_config.keepalive_args,
         error_action="create",
         format_output=True,
     )
     logger.info(f"container [{container_name}] created")
+    return container_name
+
+
+@app.command(help="create a container from an image", no_args_is_help=True)
+def create(
+    image_name: str = typer.Option(
+        ...,
+        "-n",
+        "--image-name",
+        help="name of the image to run.",
+    ),
+    container_name: str = typer.Option(
+        None,
+        "-c",
+        "--container-name",
+        help="name to give the container.",
+    ),
+    profile_name: Optional[str] = typer.Option(
+        None,
+        "-P",
+        "--profile",
+        help="profile from the mim config to apply.",
+    ),
+    workspaces: List[str] = typer.Option(
+        [],
+        "-W",
+        "--workspace",
+        help=(
+            "workspace mount: host_path[:container_path[:ro|rw]]; "
+            "defaults to /work/<name>."
+        ),
+    ),
+    home_shares: List[str] = typer.Option(
+        [],
+        "-H",
+        "--home-share",
+        help=(
+            "passthrough mount under host home; available at identical path "
+            "and under container HOME."
+        ),
+    ),
+    port_binds: List[str] = typer.Option(
+        [],
+        "-p",
+        "--port-bind",
+        help="port to bind from the host to the container.",
+    ),
+    mounts: List[str] = typer.Option(
+        [],
+        "-M",
+        "--mount",
+        help="mount in format host_path:container_path[:ro|rw].",
+    ),
+    devices: List[str] = typer.Option(
+        [],
+        "-D",
+        "--device",
+        help="device passthrough in format host_device or host_device:container_device.",
+    ),
+    host_pid: bool = typer.Option(
+        False,
+        "--host-pid",
+        help="share the host's PID namespace with the container.",
+    ),
+    network: Optional[str] = typer.Option(
+        None,
+        "--network",
+        help="network mode: default, none, or host.",
+    ),
+    privileged: bool = typer.Option(
+        False,
+        "--privileged",
+        help="run the container in privileged mode.",
+    ),
+    keepalive_command: Optional[str] = typer.Option(
+        None,
+        "--keepalive-command",
+        help="override the image command used as pid 1.",
+    ),
+    integrate_home: bool = typer.Option(
+        False,
+        "--integrate-home",
+        help="mount full host home under /mim/home/<user> and set HOST_HOME.",
+    ),
+):
+    config = _build_create_config(
+        profile_name,
+        home_shares,
+        mounts,
+        workspaces,
+        port_binds,
+        devices,
+        host_pid,
+        network,
+        privileged,
+        keepalive_command,
+        integrate_home,
+    )
+    _create_container(image_name, container_name, config)
 
 
 @app.command(help="destroy a container", no_args_is_help=True)
@@ -668,31 +589,50 @@ def destroy(
     logger.info(f"container [{container_name}] destroyed")
 
 
-@app.command(help="get a shell in a running container", no_args_is_help=True)
-def shell(
+@app.command(name="inspect", help="inspect a mim container", no_args_is_help=True)
+def inspect_container(
     container_name: str = typer.Option(
         ...,
         "-c",
         "--container-name",
-        help="name of the container to get a shell in.",
-    ),
-    shell: str = typer.Option(
-        "zsh -l",
-        "-s",
-        "--shell",
-        help="shell command to run in the container.",
-    ),
-    as_root: bool = typer.Option(
-        False,
-        "--as-root",
-        help="run shell as root inside the container.",
-    ),
-    as_user: bool = typer.Option(
-        False,
-        "--as-user",
-        help="run shell as non-root user inside the container.",
+        help="name of the container to inspect.",
     ),
 ):
+    _require_mim_container(container_name)
+
+    inspect_data = get_container_inspect(container_name)
+    if inspect_data is None:
+        logger.error(f"container [{container_name}] could not be inspected")
+        raise typer.Exit(1)
+
+    container_data_dir = os.path.join(DATA_DIR, container_name)
+    container_inspection = build_container_inspection(
+        container_name,
+        get_container_runtime(),
+        container_data_dir,
+        inspect_data,
+    )
+    output.print_key_value_table("container", container_inspection.basics)
+    output.print_table(
+        "mounts",
+        ["source", "target", "mode"],
+        container_inspection.mounts,
+    )
+    output.print_table("ports", ["container", "host"], container_inspection.ports)
+    output.print_table(
+        "devices",
+        ["host", "container", "permissions"],
+        container_inspection.devices,
+    )
+    output.print_table("env", ["key"], container_inspection.env_keys)
+
+
+def _shell_container(
+    container_name: str,
+    shell_command: str,
+    as_root: bool,
+    as_user: bool,
+) -> None:
     _require_mim_container(container_name)
 
     if not container_is_running(container_name):
@@ -720,7 +660,7 @@ def shell(
     except ValueError as exc:
         logger.error(str(exc))
         raise typer.Exit(1)
-    shell_command_args = shlex.split(shell)
+    shell_command_args = shlex.split(shell_command)
     if len(shell_command_args) == 0:
         logger.error("shell command cannot be empty")
         raise typer.Exit(1)
@@ -767,6 +707,161 @@ def shell(
         error_action="shell",
         foreground=True,
     )
+
+
+@app.command(
+    name="shell", help="get a shell in a running container", no_args_is_help=True
+)
+def shell_command(
+    container_name: str = typer.Option(
+        ...,
+        "-c",
+        "--container-name",
+        help="name of the container to get a shell in.",
+    ),
+    shell: str = typer.Option(
+        "zsh -l",
+        "-s",
+        "--shell",
+        help="shell command to run in the container.",
+    ),
+    as_root: bool = typer.Option(
+        False,
+        "--as-root",
+        help="run shell as root inside the container.",
+    ),
+    as_user: bool = typer.Option(
+        False,
+        "--as-user",
+        help="run shell as non-root user inside the container.",
+    ),
+):
+    _shell_container(container_name, shell, as_root, as_user)
+
+
+@app.command(
+    name="enter", help="create if needed, then open a shell", no_args_is_help=True
+)
+def enter_container(
+    image_name: Optional[str] = typer.Option(
+        None,
+        "-n",
+        "--image-name",
+        help="image to use if the container must be created.",
+    ),
+    container_name: Optional[str] = typer.Option(
+        None,
+        "-c",
+        "--container-name",
+        help="container to enter; defaults to the image name when creating.",
+    ),
+    profile_name: Optional[str] = typer.Option(
+        None,
+        "-P",
+        "--profile",
+        help="profile from the mim config to apply when creating.",
+    ),
+    workspaces: List[str] = typer.Option(
+        [],
+        "-W",
+        "--workspace",
+        help="workspace mount used when creating: host_path[:container_path[:ro|rw]].",
+    ),
+    home_shares: List[str] = typer.Option(
+        [],
+        "-H",
+        "--home-share",
+        help="home share used when creating.",
+    ),
+    port_binds: List[str] = typer.Option(
+        [],
+        "-p",
+        "--port-bind",
+        help="port bind used when creating.",
+    ),
+    mounts: List[str] = typer.Option(
+        [],
+        "-M",
+        "--mount",
+        help="mount used when creating: host_path:container_path[:ro|rw].",
+    ),
+    devices: List[str] = typer.Option(
+        [],
+        "-D",
+        "--device",
+        help="device passthrough used when creating.",
+    ),
+    host_pid: bool = typer.Option(
+        False,
+        "--host-pid",
+        help="share the host's PID namespace when creating.",
+    ),
+    network: Optional[str] = typer.Option(
+        None,
+        "--network",
+        help="network mode used when creating: default, none, or host.",
+    ),
+    privileged: bool = typer.Option(
+        False,
+        "--privileged",
+        help="run the container in privileged mode when creating.",
+    ),
+    keepalive_command: Optional[str] = typer.Option(
+        None,
+        "--keepalive-command",
+        help="override the image command used as pid 1 when creating.",
+    ),
+    integrate_home: bool = typer.Option(
+        False,
+        "--integrate-home",
+        help="mount full host home when creating.",
+    ),
+    shell_command: str = typer.Option(
+        "zsh -l",
+        "-s",
+        "--shell",
+        help="shell command to run in the container.",
+    ),
+    as_root: bool = typer.Option(
+        False,
+        "--as-root",
+        help="run shell as root inside the container.",
+    ),
+    as_user: bool = typer.Option(
+        False,
+        "--as-user",
+        help="run shell as non-root user inside the container.",
+    ),
+):
+    if container_name is None:
+        if image_name is None:
+            logger.error("must provide --container-name or --image-name")
+            raise typer.Exit(1)
+        container_name = image_name
+
+    if not container_exists(container_name):
+        if image_name is None:
+            logger.error(
+                f"container [{container_name}] does not exist; provide --image-name to create it"
+            )
+            raise typer.Exit(1)
+
+        config = _build_create_config(
+            profile_name,
+            home_shares,
+            mounts,
+            workspaces,
+            port_binds,
+            devices,
+            host_pid,
+            network,
+            privileged,
+            keepalive_command,
+            integrate_home,
+        )
+        _create_container(image_name, container_name, config)
+
+    _shell_container(container_name, shell_command, as_root, as_user)
 
 
 @app.command(help="start a container", no_args_is_help=True)
@@ -828,8 +923,8 @@ def stop(
     logger.info(f"container [{container_name}] stopped")
 
 
-@app.command(help="list all mim containers")
-def list():
+@app.command(name="list", help="list all mim containers")
+def list_containers():
     containers = get_containers(only_mim=True)
     rows = [
         (

@@ -218,6 +218,10 @@ def _get_container_inspect(container_name):
     return inspect_data[0]
 
 
+def get_container_inspect(container_name):
+    return _get_container_inspect(container_name)
+
+
 def _get_image_inspect(image_name):
     inspect_cmd = CONTAINER_CMD.bake("image", "inspect", image_name)
     inspect_json = inspect_cmd()

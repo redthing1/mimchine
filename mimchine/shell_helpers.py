@@ -5,12 +5,12 @@ import pwd
 import re
 import shlex
 from dataclasses import dataclass
-
 import sh
 from .log import logger
 
 from .containers import CONTAINER_CMD, get_container_env
 from .integration import CONTAINER_HOME_DIR, CONTAINER_SHELL_HISTORY_DIR
+from .paths import normalize_host_path
 
 MIM_ZDOTDIR_ENV_KEY = "MIM_ZDOTDIR"
 _IDENTITY_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
@@ -413,7 +413,3 @@ def prepare_non_root_shell(
             )
 
     return shell_home_dir, shell_env
-
-
-def normalize_host_path(path: str) -> str:
-    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))

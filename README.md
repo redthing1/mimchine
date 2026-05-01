@@ -1,15 +1,12 @@
-
 # mimchine
 
-well-integrated **mini-machines**; a portable linux that has all your data dirs mounted. inspired by [distrobox](https://github.com/89luca89/distrobox) and powered by podman.
+well-integrated **mini-machines**; a portable linux that can have host dirs linked in. inspired by [distrobox](https://github.com/89luca89/distrobox) and powered by podman.
 
 ## what it's about
 
-sometimes, i want a linux terminal development environment on macos, and i want all my data magically linked in. so that i can cd to a source directory and seamlessly build it.
+sometimes, i want a linux terminal development environment on macos or linux, and i want it to feel like my machine. maybe i mount a whole dev tree, so that i can seamlessly do things.
 
-with the power of containers, we can do just that. we run a linux userspace of our choice (fully customizable by a dockerfile), and mount in all our directories.
-
-mimchine makes the above super easy. just build a machine image, create a container, then run `mimchine shell` and you're in!
+build an image, enter a container, then get a shell.
 
 ## setup
 
@@ -28,44 +25,54 @@ podman machine stop && ulimit -n unlimited && podman machine start
 
 ## usage
 
-### sync project environment
+sync project environment:
 
 ```sh
 uv sync
 ```
 
-### build a mimchine image
+build a mimchine image:
 
 ```sh
 uv run mimchine build -f ./demo/mim_fed_demo.docker -n mim_fed_demo
 ```
 
-### create a mimchine
+create one with a workspace:
 
 ```sh
-uv run mimchine create -n mim_fed_demo -H ~/Downloads
+uv run mimchine create -n mim_fed_demo -c mim_fed_demo -W ~/Dev/project
 ```
 
-### export an image
+mount anything else directly:
 
 ```sh
-uv run mimchine export -n mim_fed -o ~/Downloads/mim_fed.tar.zst
+uv run mimchine create \
+  -n mim_fed_demo \
+  -M ~/.stuff:/home/user/.stuff:rw \
+  -M ~/Downloads/reference:/refs:ro
 ```
 
-### import an image
+if you repeat the same mounts a lot, put them in `~/.config/mimchine/config.toml`:
+
+```toml
+[profiles.work]
+workspaces = ["~/Dev/project"]
+mounts = ["~/.stuff:/home/user/.stuff:rw"]
+network = "default"
+```
+
+then:
 
 ```sh
-uv run mimchine import -i ~/Downloads/mim_fed.tar.zst
+uv run mimchine enter -n mim_fed_demo -c mim_fed_demo -P work
 ```
 
-### open a shell in a mimchine
+other useful snippets:
 
 ```sh
 uv run mimchine shell -c mim_fed_demo
-```
-
-### destroy a mimchine
-
-```sh
+uv run mimchine inspect -c mim_fed_demo
+uv run mimchine export -n mim_fed_demo -o ~/Downloads/mim_fed_demo.tar.zst
+uv run mimchine import -i ~/Downloads/mim_fed_demo.tar.zst
 uv run mimchine destroy -c mim_fed_demo -f
 ```
