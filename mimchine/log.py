@@ -1,19 +1,23 @@
-from redlog import Level, get_logger, set_level
+import logging
 
-logger = get_logger("mimchine")
+logger = logging.getLogger("mimchine")
+_handler = logging.StreamHandler()
+_handler.setFormatter(logging.Formatter("%(message)s"))
+logger.addHandler(_handler)
+logger.propagate = False
 
 
 def configure_logging(verbose_count: int, quiet: bool) -> None:
     if quiet:
-        set_level(Level.WARN)
+        logger.setLevel(logging.WARNING)
         return
 
     if verbose_count >= 2:
-        set_level(Level.DEBUG)
+        logger.setLevel(logging.DEBUG)
         return
 
-    if verbose_count == 1:
-        set_level(Level.VERBOSE)
+    if verbose_count >= 1:
+        logger.setLevel(logging.INFO)
         return
 
-    set_level(Level.INFO)
+    logger.setLevel(logging.INFO)

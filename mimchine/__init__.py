@@ -1,5 +1,15 @@
 from pathlib import Path
-from single_source import get_version
+from importlib.metadata import PackageNotFoundError, version
+import tomllib
 
-_ver_path = Path(__file__).parent.parent
-__VERSION__ = get_version(__name__, _ver_path)
+
+def _read_version() -> str:
+    try:
+        return version("mimchine")
+    except PackageNotFoundError:
+        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        return str(data["project"]["version"])
+
+
+__VERSION__ = _read_version()

@@ -24,6 +24,21 @@ wheels = [
 ]
 
 [[package]]
+name = "hatchling"
+version = "1.24.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+    { name = "pathspec" },
+    { name = "pluggy" },
+    { name = "trove-classifiers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2d/18/dbb6b0c167c21429e4f4b03744f5da79d4a534f12c13fd41d2d3033b96da/hatchling-1.24.2.tar.gz", hash = "sha256:41ddc27cdb25db9ef7b68bef075f829c84cb349aa1bff8240797d012510547b0", size = 63973, upload-time = "2024-04-22T02:21:50.087Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5f/20/b890241570ac3ba6508febab3104eeb1acd7ffba1bd3447190f56151f1bc/hatchling-1.24.2-py3-none-any.whl", hash = "sha256:5576ad05227cf96bb4bfd3a5dce31aa53eff05e95da57b40769bd5a3096b31b1", size = 83103, upload-time = "2024-04-22T02:21:47.992Z" },
+]
+
+[[package]]
 name = "markdown-it-py"
 version = "4.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -46,25 +61,45 @@ wheels = [
 
 [[package]]
 name = "mimchine"
-version = "0.31.0"
+version = "0.32.0"
 source = { editable = "." }
 dependencies = [
     { name = "platformdirs" },
-    { name = "redlog-py" },
     { name = "rich" },
-    { name = "sh" },
-    { name = "single-source" },
     { name = "typer" },
+]
+
+[package.dev-dependencies]
+build = [
+    { name = "hatchling" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "platformdirs", specifier = ">=4.2.0,<5.0.0" },
-    { name = "redlog-py", specifier = ">=0.1.1" },
-    { name = "rich", specifier = ">=13.9.4" },
-    { name = "sh", specifier = ">=2.2.2,<3.0.0" },
-    { name = "single-source", specifier = ">=0.4.0" },
-    { name = "typer", specifier = ">=0.15.2,<0.16.0" },
+    { name = "platformdirs", specifier = "==4.9.2" },
+    { name = "rich", specifier = "==13.9.4" },
+    { name = "typer", specifier = "==0.15.4" },
+]
+
+[package.metadata.requires-dev]
+build = [{ name = "hatchling", specifier = "==1.24.2" }]
+
+[[package]]
+name = "packaging"
+version = "26.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d7/f1/e7a6dd94a8d4a5626c03e4e99c87f241ba9e350cd9e6d75123f992427270/packaging-26.2.tar.gz", hash = "sha256:ff452ff5a3e828ce110190feff1178bb1f2ea2281fa2075aadb987c2fb221661", size = 228134, upload-time = "2026-04-24T20:15:23.917Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl", hash = "sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e", size = 100195, upload-time = "2026-04-24T20:15:22.081Z" },
+]
+
+[[package]]
+name = "pathspec"
+version = "1.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/82/42f767fc1c1143d6fd36efb827202a2d997a375e160a71eb2888a925aac1/pathspec-1.1.1.tar.gz", hash = "sha256:17db5ecd524104a120e173814c90367a96a98d07c45b2e10c2f3919fff91bf5a", size = 135180, upload-time = "2026-04-27T01:46:08.907Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f1/d9/7fb5aa316bc299258e68c73ba3bddbc499654a07f151cba08f6153988714/pathspec-1.1.1-py3-none-any.whl", hash = "sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189", size = 57328, upload-time = "2026-04-27T01:46:07.06Z" },
 ]
 
 [[package]]
@@ -77,25 +112,21 @@ wheels = [
 ]
 
 [[package]]
+name = "pluggy"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
+]
+
+[[package]]
 name = "pygments"
 version = "2.19.2"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/b0/77/a5b8c569bf593b0140bde72ea885a803b82086995367bf2037de0159d924/pygments-2.19.2.tar.gz", hash = "sha256:636cb2477cec7f8952536970bc533bc43743542f70392ae026374600add5b887", size = 4968631, upload-time = "2025-06-21T13:39:12.283Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/21/705964c7812476f378728bdf590ca4b771ec72385c533964653c68e86bdc/pygments-2.19.2-py3-none-any.whl", hash = "sha256:86540386c03d588bb81d44bc3928634ff26449851e99741617ecb9037ee5ec0b", size = 1225217, upload-time = "2025-06-21T13:39:07.939Z" },
-]
-
-[[package]]
-name = "redlog-py"
-version = "0.1.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "colorama" },
-    { name = "rich" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/39/00/09a17b1914d461dcc4a59000a6fa05d00836fd87c9d30cd992f3bf167ae5/redlog_py-0.1.1.tar.gz", hash = "sha256:879aba748f385d99b227e3e50fd180e37ee04ce20810ea03184a435c3b75932b", size = 9762, upload-time = "2025-07-19T19:55:14.32Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/12/4a/882b5e29d9bf81bb1b83bcae8c8714d0759c3f638f20bf27c1c0a05a0279/redlog_py-0.1.1-py3-none-any.whl", hash = "sha256:a7160976cff45739b1fe02afc30e0022e2ed6312e7cf82414f886497cf811ba3", size = 11504, upload-time = "2025-07-19T19:55:13.503Z" },
 ]
 
 [[package]]
@@ -112,15 +143,6 @@ wheels = [
 ]
 
 [[package]]
-name = "sh"
-version = "2.2.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/59/52/f43920223c93e31874677c681b8603d36a40d3d8502d3a37f80d3995d43e/sh-2.2.2.tar.gz", hash = "sha256:653227a7c41a284ec5302173fbc044ee817c7bad5e6e4d8d55741b9aeb9eb65b", size = 345866, upload-time = "2025-02-24T07:16:25.363Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/70/98/d82f14ac7ffedbd38dfa2383f142b26d18d23ca6cf35a40f4af60df666bd/sh-2.2.2-py3-none-any.whl", hash = "sha256:e0b15b4ae8ffcd399bc8ffddcbd770a43c7a70a24b16773fbb34c001ad5d52af", size = 38295, upload-time = "2025-02-24T07:16:23.782Z" },
-]
-
-[[package]]
 name = "shellingham"
 version = "1.5.4"
 source = { registry = "https://pypi.org/simple" }
@@ -130,12 +152,12 @@ wheels = [
 ]
 
 [[package]]
-name = "single-source"
-version = "0.4.0"
+name = "trove-classifiers"
+version = "2026.4.28.13"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/85/c5/096cda37599fb12f9930266ebb66e72e0ef3c39eb8be1934025f44e9c7ed/single_source-0.4.0.tar.gz", hash = "sha256:7917aa113bda60072f01952e2966cd7247f0ec16fe52a1555f3c066b553e98b4", size = 4803, upload-time = "2024-06-11T10:08:33.357Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/04/af/88fdebf242bc7bc4957c96c5358a2b2b0f07e5001401906783a521ea9f54/trove_classifiers-2026.4.28.13.tar.gz", hash = "sha256:c85bb8a53c3de7330d1699b844ed9fb809a602a09ac15dc79ad6d1a509be0676", size = 17035, upload-time = "2026-04-28T13:45:41.495Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7f/34/c26bc3fbd88437ae3417f57f10c5eff926e095cc3d61a235478907c28b2d/single_source-0.4.0-py3-none-any.whl", hash = "sha256:38880b16e6e0ca2e012f85dc3820eb31999ace5f1d9a588395ea38f8bd0775f5", size = 5590, upload-time = "2024-06-11T10:08:31.626Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/bb/fbdc4e57731efb86b4209ffdd2519520782bf27b3c961beac3e5c20d2b87/trove_classifiers-2026.4.28.13-py3-none-any.whl", hash = "sha256:8f4b1eb4e16296b57d612965444f87a83861cc989a0451ac97fe4265ddef03b8", size = 14216, upload-time = "2026-04-28T13:45:39.943Z" },
 ]
 
 [[package]]

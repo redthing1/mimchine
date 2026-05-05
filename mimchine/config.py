@@ -1,158 +1,125 @@
-import os
-from pathlib import Path
-from typing import Dict, Any
-
-from platformdirs import user_config_dir
-from .log import logger
+from __future__ import annotations
 
 import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from platformdirs import user_config_dir
+
+from .domain import NetworkMode
+from .log import logger
 
 
-DEFAULT_CONFIG = {
-    "container": {
-        "runtime": "podman",
-    }
-}
-DEFAULT_CONFIG_TOML = '[container]\nruntime = "podman"\n'
-SUPPORTED_CONTAINER_RUNTIMES = ("podman", "docker")
-SUPPORTED_CONTAINER_RUNTIMES_STR = ", ".join(SUPPORTED_CONTAINER_RUNTIMES)
-
-_container_runtime_override: str | None = None
+SUPPORTED_BUILDERS = ("podman", "docker")
+SUPPORTED_RUNNERS = ("podman", "docker", "smolvm")
+SUPPORTED_TOP_LEVEL_TABLES = ("defaults", "profiles")
+SUPPORTED_DEFAULT_KEYS = ("builder", "runner", "network", "shell")
 
 
-def _normalize_runtime(runtime: str) -> str:
-    return runtime.strip().lower()
+@dataclass(frozen=True)
+class Defaults:
+    builder: str = "podman"
+    runner: str = "podman"
+    network: NetworkMode = NetworkMode.DEFAULT
+    shell: str = "sh"
 
 
-def _normalize_and_validate_runtime(runtime: str) -> str:
-    normalized_runtime = _normalize_runtime(runtime)
-    if normalized_runtime not in SUPPORTED_CONTAINER_RUNTIMES:
-        raise ValueError(
-            f"invalid container runtime: {runtime}. must be one of: {SUPPORTED_CONTAINER_RUNTIMES_STR}"
-        )
-
-    return normalized_runtime
+@dataclass(frozen=True)
+class AppConfig:
+    defaults: Defaults
+    profiles: dict[str, dict[str, Any]]
 
 
-def set_container_runtime_override(runtime: str | None) -> None:
-    global _container_runtime_override
-
-    if runtime is None:
-        _container_runtime_override = None
-        return
-
-    _container_runtime_override = _normalize_and_validate_runtime(runtime)
+DEFAULT_CONFIG_TOML = """[defaults]
+builder = "podman"
+runner = "podman"
+network = "default"
+shell = "sh"
+"""
 
 
 def get_config_dir() -> Path:
-    """Get the platform-appropriate config directory for mimchine."""
-    import platform
-
-    system = platform.system().lower()
-
-    if system == "darwin":
-        config_path = Path.home() / ".config" / "mimchine"
-    elif system == "linux":
-        xdg_config = os.environ.get("XDG_CONFIG_HOME")
-        if xdg_config:
-            config_path = Path(xdg_config) / "mimchine"
-        else:
-            config_path = Path.home() / ".config" / "mimchine"
-    else:
-        config_path = Path(user_config_dir("mimchine"))
-
-    config_path.mkdir(parents=True, exist_ok=True)
-    return config_path
+    path = Path(user_config_dir("mimchine"))
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def get_config_path() -> Path:
-    """Get the full path to the config file."""
     return get_config_dir() / "config.toml"
 
 
-def load_config() -> Dict[str, Any]:
-    """Load configuration from TOML file, creating default if it doesn't exist."""
-    config_path = get_config_path()
+def create_default_config(path: Path | None = None) -> None:
+    config_path = path or get_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(DEFAULT_CONFIG_TOML, encoding="utf-8")
+    logger.info(f"created default config file at {config_path}")
 
+
+def load_config(path: Path | None = None) -> AppConfig:
+    config_path = path or get_config_path()
     if not config_path.exists():
-        logger.info(f"config file not found at {config_path}")
-        create_default_config()
-        return DEFAULT_CONFIG.copy()
+        create_default_config(config_path)
+        return AppConfig(defaults=Defaults(), profiles={})
 
-    try:
-        with open(config_path, "rb") as f:
-            config = tomllib.load(f)
-        logger.debug(f"loaded config from {config_path}")
-        return config
-    except Exception as e:
-        logger.warn(f"failed to load config from {config_path}: {e}")
-        logger.info("using default configuration")
-        return DEFAULT_CONFIG.copy()
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("config must be a TOML table")
+    unknown_tables = sorted(set(data) - set(SUPPORTED_TOP_LEVEL_TABLES))
+    if unknown_tables:
+        expected = ", ".join(f"[{name}]" for name in SUPPORTED_TOP_LEVEL_TABLES)
+        actual = ", ".join(f"[{name}]" for name in unknown_tables)
+        raise ValueError(f"unknown config table {actual}; supported tables: {expected}")
+
+    defaults = _read_defaults(data.get("defaults", {}))
+    profiles = data.get("profiles", {})
+    if profiles is None:
+        profiles = {}
+    if not isinstance(profiles, dict):
+        raise ValueError("config field [profiles] must be a table")
+
+    normalized_profiles: dict[str, dict[str, Any]] = {}
+    for name, profile in profiles.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("profile names must be non-empty strings")
+        if not isinstance(profile, dict):
+            raise ValueError(f"profile [{name}] must be a table")
+        normalized_profiles[name.strip()] = profile
+
+    return AppConfig(defaults=defaults, profiles=normalized_profiles)
 
 
-def create_default_config() -> None:
-    """Create the default configuration file."""
-    config_path = get_config_path()
-    config_dir = config_path.parent
-
-    # Ensure config directory exists
-    config_dir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        config_path.write_text(DEFAULT_CONFIG_TOML, encoding="utf-8")
-        logger.info(f"created default config file at {config_path}")
-        logger.info("you can edit this file to customize mimchine's behavior")
-    except Exception as e:
-        logger.error(f"failed to create config file at {config_path}: {e}")
-
-
-def get_container_runtime() -> str:
-    """Get the configured container runtime (podman or docker)."""
-    if _container_runtime_override is not None:
-        return _container_runtime_override
-
-    config = load_config()
-    runtime = str(config.get("container", {}).get("runtime", "podman"))
-    try:
-        return _normalize_and_validate_runtime(runtime)
-    except ValueError:
-        normalized_runtime = _normalize_runtime(runtime)
-        logger.error(
-            f"invalid container runtime in config: {normalized_runtime}. falling back to podman"
+def _read_defaults(data: Any) -> Defaults:
+    if data is None:
+        return Defaults()
+    if not isinstance(data, dict):
+        raise ValueError("config field [defaults] must be a table")
+    unknown = sorted(set(data) - set(SUPPORTED_DEFAULT_KEYS))
+    if unknown:
+        raise ValueError(
+            f"config field [defaults] has unknown key(s): {', '.join(unknown)}"
         )
-        return "podman"
+
+    builder = str(data.get("builder", "podman")).strip()
+    runner = str(data.get("runner", "podman")).strip()
+    network = NetworkMode(str(data.get("network", "default")).strip())
+    shell = str(data.get("shell", "sh")).strip() or "sh"
+
+    validate_builder(builder)
+    validate_runner(runner)
+
+    return Defaults(builder=builder, runner=runner, network=network, shell=shell)
 
 
-def validate_config(config: Dict[str, Any]) -> bool:
-    """Validate configuration structure and values."""
-    if not isinstance(config, dict):
-        return False
+def validate_builder(name: str) -> str:
+    if name not in SUPPORTED_BUILDERS:
+        expected = ", ".join(SUPPORTED_BUILDERS)
+        raise ValueError(f"unsupported builder [{name}], expected one of: {expected}")
+    return name
 
-    # Check container runtime if specified
-    if "container" in config:
-        container_config = config["container"]
-        if not isinstance(container_config, dict):
-            return False
 
-        if "runtime" in container_config:
-            runtime = str(container_config["runtime"])
-            try:
-                _normalize_and_validate_runtime(runtime)
-            except ValueError:
-                logger.error(
-                    f"invalid container runtime: {runtime}. must be one of: {SUPPORTED_CONTAINER_RUNTIMES_STR}"
-                )
-                return False
-
-    if "profiles" in config:
-        profiles_config = config["profiles"]
-        if not isinstance(profiles_config, dict):
-            return False
-
-        for profile_name, profile_config in profiles_config.items():
-            if not isinstance(profile_name, str) or not isinstance(
-                profile_config, dict
-            ):
-                return False
-
-    return True
+def validate_runner(name: str) -> str:
+    if name not in SUPPORTED_RUNNERS:
+        expected = ", ".join(SUPPORTED_RUNNERS)
+        raise ValueError(f"unsupported runner [{name}], expected one of: {expected}")
+    return name

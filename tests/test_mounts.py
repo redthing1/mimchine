@@ -1,45 +1,50 @@
+from __future__ import annotations
+
 import os
-import tempfile
-import unittest
+from pathlib import Path
 
-from mimchine import mounts
+import pytest
 
-
-class MountTests(unittest.TestCase):
-    def test_parse_mount_spec_accepts_read_only_mode(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            spec = mounts.parse_mount_spec(f"{temp_dir}:/refs:ro")
-
-        self.assertEqual(spec.source_path, os.path.realpath(temp_dir))
-        self.assertEqual(spec.container_path, "/refs")
-        self.assertEqual(spec.mode, "ro")
-
-    def test_parse_workspace_spec_defaults_target_and_mode(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            workspace_dir = os.path.join(temp_dir, "project")
-            os.makedirs(workspace_dir)
-
-            spec = mounts.parse_workspace_spec(workspace_dir)
-
-        self.assertEqual(spec.source_path, os.path.realpath(workspace_dir))
-        self.assertEqual(spec.container_path, "/work/project")
-        self.assertEqual(spec.mode, "rw")
-
-    def test_parse_workspace_spec_accepts_mode_without_target(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            workspace_dir = os.path.join(temp_dir, "project")
-            os.makedirs(workspace_dir)
-
-            spec = mounts.parse_workspace_spec(f"{workspace_dir}:ro")
-
-        self.assertEqual(spec.container_path, "/work/project")
-        self.assertEqual(spec.mode, "ro")
-
-    def test_parse_workspace_spec_rejects_files(self):
-        with tempfile.NamedTemporaryFile() as temp_file:
-            with self.assertRaisesRegex(ValueError, "not a directory"):
-                mounts.parse_workspace_spec(temp_file.name)
+from mimchine.mounts import map_host_path_to_guest, parse_mount_spec, parse_workspace_spec
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_workspace_defaults_to_work_dir(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    mount = parse_workspace_spec(str(project))
+
+    assert mount.source == project.resolve()
+    assert mount.target == "/work/project"
+    assert mount.kind == "workspace"
+
+
+def test_mount_requires_absolute_guest_target(tmp_path: Path) -> None:
+    path = tmp_path / "config"
+    path.write_text("x", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="absolute"):
+        parse_mount_spec(f"{path}:relative")
+
+
+def test_mount_rejects_special_files(tmp_path: Path) -> None:
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+
+    with pytest.raises(ValueError, match="directory or regular file"):
+        parse_mount_spec(f"{fifo}:/pipe")
+
+
+def test_map_host_path_to_guest_uses_most_specific_mount(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    nested = root / "src"
+    nested.mkdir(parents=True)
+    file_path = nested / "main.py"
+    file_path.write_text("print(1)", encoding="utf-8")
+
+    mounts = (
+        parse_workspace_spec(f"{root}:/work/project"),
+        parse_workspace_spec(f"{nested}:/src"),
+    )
+
+    assert map_host_path_to_guest(file_path, mounts) == "/src/main.py"

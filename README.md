@@ -1,78 +1,93 @@
 # mimchine
 
-well-integrated **mini-machines**; a portable linux that can have host dirs linked in. inspired by [distrobox](https://github.com/89luca89/distrobox) and powered by podman.
+ergonomic local **mini-machines**. build oci images, then create named machines with useful stuff mounted.
 
-## what it's about
+run using docker, podman, or kvm microvm.
 
-sometimes, i want a linux terminal development environment on macos or linux, and i want it to feel like my machine. maybe i mount a whole dev tree, so that i can seamlessly do things.
-
-build an image, enter a container, then get a shell.
-
-## setup
-
-### linux
-
-should be all good to go
-
-### macos
-
-ensure podman machine is initialized as such:
+## dev
 
 ```sh
-podman machine init --volume /Users --volume /Volumes
-podman machine stop && ulimit -n unlimited && podman machine start
+uv sync --locked
+uv run mim --help
 ```
 
-## usage
+build demo image:
+```sh
+uv run mim build mim-fed:dev -f demo/mim_fed.docker -C demo
+```
 
-sync project environment:
+create and enter machine:
+```sh
+uv run mim create dev --image mim-fed:dev --workspace .
+uv run mim enter dev
+```
+
+run command:
+```sh
+uv run mim exec dev pwd
+```
+
+stop/delete it:
+```sh
+uv run mim stop dev
+uv run mim delete dev -f
+```
+
+## backends
+
+choose a builder:
+```sh
+mim build app:dev -f Containerfile -C . --builder podman
+mim build app:dev -f Dockerfile -C . --builder docker
+```
+
+choose a runner:
+```sh
+mim create dev --image app:dev --runner podman
+mim create dev --image app:dev --runner docker
+mim create dev --image alpine --runner smolvm --net
+```
+
+# common options
 
 ```sh
-uv sync
+mim create dev --image app:dev --workspace .
+mim create dev --image app:dev --mount ./cache:/cache:ro
+mim create web --image app:dev --port 8080:80 --net
+mim create git --image app:dev --ssh-agent
+mim create dev --image app:dev --host-user
+mim create dev --image app:dev --root
 ```
 
-build a mimchine image:
+## config
 
-```sh
-uv run mimchine build -f ./demo/mim_fed_demo.docker -n mim_fed_demo
-```
-
-create one with a workspace:
-
-```sh
-uv run mimchine create -n mim_fed_demo -c mim_fed_demo -W ~/Dev/project
-```
-
-mount anything else directly:
-
-```sh
-uv run mimchine create \
-  -n mim_fed_demo \
-  -M ~/.stuff:/home/user/.stuff:rw \
-  -M ~/Downloads/reference:/refs:ro
-```
-
-if you repeat the same mounts a lot, put them in `~/.config/mimchine/config.toml`:
+your config file is at `~/.config/mimchine/config.toml`
 
 ```toml
-[profiles.work]
-workspaces = ["~/Dev/project"]
-mounts = ["~/.stuff:/home/user/.stuff:rw"]
+[defaults]
+builder = "podman"
+runner = "podman"
 network = "default"
+shell = "sh"
+
+[profiles.work]
+image = "mim-fed:dev"
+workspace = "."
+env = ["EDITOR=nvim"]
+network = "none"
+identity = "host"
+shell = "zsh -l"
 ```
 
-then:
-
+use a profile:
 ```sh
-uv run mimchine enter -n mim_fed_demo -c mim_fed_demo -P work
+mim create work --profile work
+mim enter work
 ```
 
-other useful snippets:
+## shell state
 
+`mim enter` mounts per-machine shell state directory at `/mim/shell-state`. For `zsh` and `bash`, history is written there automatically. to keep shell state when deleting:
 ```sh
-uv run mimchine shell -c mim_fed_demo
-uv run mimchine inspect -c mim_fed_demo
-uv run mimchine export -n mim_fed_demo -o ~/Downloads/mim_fed_demo.tar.zst
-uv run mimchine import -i ~/Downloads/mim_fed_demo.tar.zst
-uv run mimchine destroy -c mim_fed_demo -f
+mim delete dev -f --keep-shell-state
 ```

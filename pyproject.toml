@@ -1,19 +1,16 @@
 [project]
 name = "mimchine"
 version = "0.32.0"
-description = "well integrated mini machines with rootless podman"
+description = "ergonomic local development machines"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
     { name = "redthing1", email = "redthing1@alt.icu" },
 ]
 dependencies = [
-    "platformdirs>=4.2.0,<5.0.0",
-    "redlog-py>=0.1.1",
-    "rich>=13.9.4",
-    "sh>=2.2.2,<3.0.0",
-    "single-source>=0.4.0",
-    "typer>=0.15.2,<0.16.0",
+    "platformdirs==4.9.2",
+    "rich==13.9.4",
+    "typer==0.15.4",
 ]
 
 [project.scripts]
@@ -21,8 +18,13 @@ mim = "mimchine.__main__:main"
 mimchine = "mimchine.__main__:main"
 
 [build-system]
-requires = ["hatchling>=1.24.2"]
+requires = ["hatchling==1.24.2"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["mimchine"]
+
+[dependency-groups]
+build = [
+    "hatchling==1.24.2",
+]
