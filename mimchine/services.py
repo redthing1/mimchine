@@ -137,7 +137,6 @@ class MachineService:
             options.shell_state and self.shell_state.path_for(options.name).exists()
         )
         record = self._record_from_options(options, profile)
-        record = self._materialize_smolvm_image(record)
         runner = self._runner(record.runner)
 
         try:
@@ -145,6 +144,7 @@ class MachineService:
                 self.shell_state.ensure(record.name)
             _validate_runner_support(record, runner)
             _validate_image_source(record)
+            record = self._materialize_smolvm_image(record)
             runner.create(record)
         except Exception:
             _delete_created_shell_state(self.shell_state, record, shell_state_preexisted)
