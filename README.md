@@ -48,6 +48,12 @@ mim create dev --image app:dev --runner docker
 mim create dev --image alpine --runner smolvm --net
 ```
 
+remove unused cache data:
+```sh
+mim prune --dry-run
+mim prune -f
+```
+
 # common options
 
 ```sh

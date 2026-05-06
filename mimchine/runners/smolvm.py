@@ -19,7 +19,7 @@ class SmolvmRunner:
             ImageSourceKind.OCI_REFERENCE,
             ImageSourceKind.SMOLMACHINE,
         ),
-        offline_oci_references=False,
+        offline_oci_references=True,
         directory_mounts=True,
         file_mounts=False,
         published_ports=True,

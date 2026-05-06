@@ -162,3 +162,29 @@ def test_delete_cli_passes_keep_shell_state(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert captured == {"name": "dev", "keep_shell_state": True}
+
+
+def test_prune_cli_passes_dry_run(monkeypatch) -> None:
+    captured = {}
+
+    class Result:
+        image_refs = 3
+        image_entries = 1
+        staging_entries = 2
+        bytes_reclaimable = 1024
+
+    class FakeMachineService:
+        def prune(self, *, dry_run):
+            captured["dry_run"] = dry_run
+            return Result()
+
+    monkeypatch.setattr(
+        cli.MachineService,
+        "default",
+        staticmethod(lambda: FakeMachineService()),
+    )
+
+    result = CliRunner().invoke(cli.app, ["prune", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert captured == {"dry_run": True}

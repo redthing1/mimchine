@@ -10,6 +10,7 @@ from mimchine.domain import (
     ExecSpec,
     IdentityMode,
     IdentitySpec,
+    ImageSource,
     ImageSourceKind,
     NetworkMode,
     RunnerCapabilities,
@@ -18,6 +19,7 @@ from mimchine.domain import (
 )
 from mimchine.services import CreateOptions, MachineService
 from mimchine.shell_state import ShellStateManager
+from mimchine.smolvm_images import PruneResult
 from mimchine.state import MachineStore
 
 
@@ -274,6 +276,48 @@ def test_rejects_offline_oci_reference_when_runner_requires_network(
     assert not (tmp_path / "shell-state" / "dev").exists()
 
 
+def test_imported_smolvm_image_can_be_created_without_network(tmp_path: Path) -> None:
+    caps = RunnerCapabilities(
+        image_sources=(
+            ImageSourceKind.OCI_REFERENCE,
+            ImageSourceKind.SMOLMACHINE,
+        ),
+        offline_oci_references=True,
+        directory_mounts=True,
+        file_mounts=True,
+        published_ports=True,
+        outbound_network=True,
+        restricted_network=True,
+        host_network=True,
+        ssh_agent=True,
+        gpu_vulkan=True,
+        root_identity=True,
+        host_identity=True,
+    )
+    runner = FakeRunner(name="smolvm", capabilities=caps)
+    images = FakeSmolvmImages()
+    service = MachineService(
+        AppConfig(defaults=Defaults(builder="podman", runner="smolvm"), profiles={}),
+        MachineStore(tmp_path / "machines"),
+        ShellStateManager(tmp_path / "shell-state"),
+        {"smolvm": runner},
+        smolvm_images=images,
+    )
+
+    record = service.create(
+        CreateOptions(
+            name="dev",
+            image="mim_codex",
+            network=NetworkMode.NONE,
+        )
+    )
+
+    assert images.materialized == [("mim_codex", "podman")]
+    assert record.image.kind is ImageSourceKind.OCI_REFERENCE
+    assert record.image.value == "mim_codex"
+    assert runner.created == [record]
+
+
 def test_rejects_runner_unsupported_root_identity(tmp_path: Path) -> None:
     caps = RunnerCapabilities(
         image_sources=(ImageSourceKind.OCI_REFERENCE,),
@@ -307,6 +351,28 @@ def test_rejects_runner_unsupported_root_identity(tmp_path: Path) -> None:
         )
 
     assert runner.created == []
+
+
+def test_prune_delegates_to_smolvm_images(tmp_path: Path) -> None:
+    images = FakeSmolvmImages()
+    service = MachineService(
+        AppConfig(defaults=Defaults(), profiles={}),
+        MachineStore(tmp_path / "machines"),
+        ShellStateManager(tmp_path / "shell-state"),
+        {"podman": FakeRunner()},
+        smolvm_images=images,
+    )
+
+    result = service.prune(dry_run=True)
+
+    assert result == PruneResult(
+        image_refs=0,
+        image_entries=0,
+        staging_entries=0,
+        bytes_reclaimable=0,
+        dry_run=True,
+    )
+    assert images.pruned == [True]
 
 
 def test_create_cleans_backend_and_shell_state_when_save_fails(tmp_path: Path) -> None:
@@ -397,3 +463,16 @@ def _service(tmp_path: Path, runner: FakeRunner, profiles=None) -> MachineServic
 class FailingStore(MachineStore):
     def save(self, record) -> None:
         raise RuntimeError("save failed")
+
+
+class FakeSmolvmImages:
+    def __init__(self):
+        self.materialized: list[tuple[str, str]] = []
+        self.pruned: list[bool] = []
+
+    def materialize(self, image: ImageSource, *, builder: str) -> None:
+        self.materialized.append((image.value, builder))
+
+    def prune(self, *, dry_run: bool) -> PruneResult:
+        self.pruned.append(dry_run)
+        return PruneResult(0, 0, 0, 0, dry_run)

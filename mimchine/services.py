@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
 
+from platformdirs import user_cache_dir
 from platformdirs import user_data_dir
 
 from .builders import Builder, get_builder
@@ -34,6 +35,7 @@ from .parsing import parse_env, parse_network_mode, parse_port_bind
 from .profiles import Profile, load_profile
 from .runners import Runner, get_runner
 from .shell_state import ShellStateManager
+from .smolvm_images import PruneResult, SmolvmImageImporter
 from .state import MachineStore
 
 
@@ -108,11 +110,13 @@ class MachineService:
         store: MachineStore,
         shell_state: ShellStateManager,
         runners: dict[str, Runner] | None = None,
+        smolvm_images: SmolvmImageImporter | None = None,
     ):
         self.config = config
         self.store = store
         self.shell_state = shell_state
         self.runners = runners or {}
+        self.smolvm_images = smolvm_images
 
     @classmethod
     def default(cls) -> "MachineService":
@@ -121,6 +125,7 @@ class MachineService:
             load_config(),
             MachineStore(data_dir / "machines"),
             ShellStateManager(data_dir / "shell-state"),
+            smolvm_images=SmolvmImageImporter(get_cache_dir() / "staging"),
         )
 
     def create(self, options: CreateOptions) -> MachineRecord:
@@ -132,6 +137,7 @@ class MachineService:
             options.shell_state and self.shell_state.path_for(options.name).exists()
         )
         record = self._record_from_options(options, profile)
+        record = self._materialize_smolvm_image(record)
         runner = self._runner(record.runner)
 
         try:
@@ -217,9 +223,26 @@ class MachineService:
             )
         return rows
 
+    def prune(self, *, dry_run: bool = False) -> PruneResult:
+        images = self.smolvm_images or SmolvmImageImporter(get_cache_dir() / "staging")
+        return images.prune(dry_run=dry_run)
+
     def _runner(self, name: str) -> Runner:
         runner_name = validate_runner(name)
         return self.runners.get(runner_name) or get_runner(runner_name)
+
+    def _materialize_smolvm_image(self, record: MachineRecord) -> MachineRecord:
+        if (
+            record.runner != "smolvm"
+            or record.image.kind is not ImageSourceKind.OCI_REFERENCE
+            or self.smolvm_images is None
+        ):
+            return record
+        self.smolvm_images.materialize(
+            record.image,
+            builder=self.config.defaults.builder,
+        )
+        return record
 
     def _record_from_options(
         self,
@@ -266,6 +289,12 @@ class MachineService:
 
 def get_data_dir() -> Path:
     path = Path(user_data_dir(APP_NAME))
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def get_cache_dir() -> Path:
+    path = Path(user_cache_dir(APP_NAME))
     path.mkdir(parents=True, exist_ok=True)
     return path
 

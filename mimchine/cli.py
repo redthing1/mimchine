@@ -325,6 +325,30 @@ def delete(
     )
 
 
+@app.command()
+def prune(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be removed."),
+    force: bool = typer.Option(False, "--force", "-f", help="Do not ask for confirmation."),
+) -> None:
+    if not dry_run and not force and not typer.confirm("delete unused smolvm image data?"):
+        raise typer.Exit()
+
+    def action() -> None:
+        result = MachineService.default().prune(dry_run=dry_run)
+        size_label = "reclaimable" if dry_run else "reclaimed"
+        print_key_value_table(
+            "mimchine prune",
+            [
+                ("image_refs", str(result.image_refs)),
+                ("image_entries", str(result.image_entries)),
+                ("staging_entries", str(result.staging_entries)),
+                (size_label, _format_bytes(result.bytes_reclaimable)),
+            ],
+        )
+
+    _run(action)
+
+
 @app.command(name="list")
 def list_machines() -> None:
     _run(lambda: print_machine_list(MachineService.default().list()))
@@ -417,3 +441,16 @@ def _identity_from_flags(root: bool, host_user: bool) -> IdentitySpec | None:
     if host_user:
         return IdentitySpec(IdentityMode.HOST)
     return None
+
+
+def _format_bytes(value: int) -> str:
+    units = ("B", "KiB", "MiB", "GiB")
+    amount = float(value)
+    unit = units[0]
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            break
+        amount /= 1024
+    if unit == "B":
+        return f"{int(amount)} {unit}"
+    return f"{amount:.1f} {unit}"
