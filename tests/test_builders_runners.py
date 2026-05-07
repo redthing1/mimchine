@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from mimchine.builders import PodmanBuilder
 from mimchine.domain import (
     BuildSpec,
@@ -107,6 +109,59 @@ def test_podman_runner_create_uses_record_as_command_source(tmp_path: Path) -> N
         "-lc",
         "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done",
     )
+
+
+def test_podman_runner_create_maps_image_identity_to_keep_id(tmp_path: Path) -> None:
+    runner = RecordingProcessRunner(stdout="1001\n1002\n")
+    record = MachineRecord.from_spec(
+        MachineSpec(
+            name="dev",
+            image=ImageSource.oci_reference("example:dev"),
+            runner="podman",
+            mounts=(MountSpec(tmp_path, "/state"),),
+        ),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    PodmanRunner(runner).create(record)
+
+    assert runner.calls[0] == (
+        "podman",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--entrypoint",
+        "sh",
+        "example:dev",
+        "-lc",
+        'printf "%s\\n%s\\n" "$(id -u)" "$(id -g)"',
+    )
+    assert runner.calls[1][:8] == (
+        "podman",
+        "create",
+        "--name",
+        "dev",
+        "--label",
+        "mimchine=1",
+        "--userns",
+        "keep-id:uid=1001,gid=1002",
+    )
+
+
+def test_podman_runner_rejects_invalid_image_identity_probe() -> None:
+    runner = RecordingProcessRunner(stdout="user\ngroup\n")
+    record = MachineRecord.from_spec(
+        MachineSpec(
+            name="dev",
+            image=ImageSource.oci_reference("example:dev"),
+            runner="podman",
+        ),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    with pytest.raises(ValueError, match="invalid uid/gid"):
+        PodmanRunner(runner).create(record)
 
 
 def test_docker_runner_host_identity_uses_uid_gid() -> None:

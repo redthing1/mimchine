@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 
 from ..domain import (
     ExecSpec,
@@ -17,6 +18,12 @@ from ..process import ProcessRunner
 
 
 KEEPALIVE_COMMAND = "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done"
+
+
+@dataclass(frozen=True)
+class ImageIdentity:
+    uid: int
+    gid: int
 
 
 class _ContainerRunner:
@@ -125,6 +132,9 @@ class _ContainerRunner:
             return ["--user", "0:0"]
         if record.identity.mode is IdentityMode.HOST:
             return self._host_identity_args()
+        return self._image_identity_args(record)
+
+    def _image_identity_args(self, record: MachineRecord) -> list[str]:
         return []
 
     def _host_identity_args(self) -> list[str]:
@@ -150,11 +160,33 @@ class PodmanRunner(_ContainerRunner):
     name = "podman"
     binary = "podman"
 
+    def _image_identity_args(self, record: MachineRecord) -> list[str]:
+        identity = self._resolve_image_identity(record.image.value)
+        return ["--userns", f"keep-id:uid={identity.uid},gid={identity.gid}"]
+
     def _host_identity_args(self) -> list[str]:
         return ["--userns", "keep-id"]
 
     def _inspect_args(self, backend_id: str) -> list[str]:
         return [self.binary, "inspect", "--format", "json", backend_id]
+
+    def _resolve_image_identity(self, image: str) -> ImageIdentity:
+        result = self.runner.run(
+            [
+                self.binary,
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--entrypoint",
+                "sh",
+                image,
+                "-lc",
+                'printf "%s\\n%s\\n" "$(id -u)" "$(id -g)"',
+            ],
+            capture=True,
+        )
+        return _parse_image_identity(image, result.stdout)
 
 
 class DockerRunner(_ContainerRunner):
@@ -181,3 +213,24 @@ def _container_state(data: dict[str, object]) -> RuntimeState:
             return RuntimeState.RUNNING
         return RuntimeState.STOPPED
     return RuntimeState.UNKNOWN
+
+
+def _parse_image_identity(image: str, text: str) -> ImageIdentity:
+    lines = [line.strip() for line in text.splitlines()]
+    if len(lines) != 2:
+        raise ValueError(f"image [{image}] returned unexpected identity probe output")
+
+    uid_text, gid_text = lines
+
+    try:
+        uid = int(uid_text)
+        gid = int(gid_text)
+    except ValueError as exc:
+        raise ValueError(
+            f"image [{image}] reported invalid uid/gid [{uid_text}:{gid_text}]"
+        ) from exc
+
+    if uid < 0 or gid < 0:
+        raise ValueError(f"image [{image}] reported negative uid/gid [{uid}:{gid}]")
+
+    return ImageIdentity(uid=uid, gid=gid)
