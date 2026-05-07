@@ -19,6 +19,15 @@ def test_load_config_creates_minimal_default(tmp_path: Path) -> None:
     assert path.read_text(encoding="utf-8").startswith("[defaults]")
 
 
+def test_config_shell_auto_means_no_shell_preference(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[defaults]\nshell = 'auto'\n", encoding="utf-8")
+
+    config = load_config(path)
+
+    assert config.defaults.shell is None
+
+
 def test_load_config_rejects_unknown_top_level_table(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text("[unexpected]\nvalue = true\n", encoding="utf-8")

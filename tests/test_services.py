@@ -18,6 +18,7 @@ from mimchine.domain import (
     RuntimeStatus,
 )
 from mimchine.services import CreateOptions, MachineService
+from mimchine.shells import AUTO_ENTER_SHELL_COMMAND
 from mimchine.shell_state import ShellStateManager
 from mimchine.smolvm_images import PruneResult
 from mimchine.state import MachineStore
@@ -135,11 +136,50 @@ def test_enter_starts_machine_and_execs_shell_from_mapped_cwd(
     assert runner.started
     record, spec = runner.execs[0]
     assert record.name == "dev"
-    assert spec.command == ("sh",)
+    assert spec.command == AUTO_ENTER_SHELL_COMMAND
     assert spec.interactive is True
     assert spec.tty is True
     assert spec.workdir == "/work/workspace"
     assert spec.env == ()
+
+
+def test_enter_uses_explicit_shell_from_record(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    service = _service(tmp_path, runner)
+    service.create(CreateOptions(name="dev", image="alpine", shell="zsh -l"))
+
+    service.enter("dev")
+
+    assert runner.execs[0][1].command == ("zsh", "-l")
+    assert runner.execs[0][1].env == ("HISTFILE=/mim/shell-state/.zsh_history",)
+
+
+def test_enter_shell_flag_overrides_record_shell(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    service = _service(tmp_path, runner)
+    service.create(CreateOptions(name="dev", image="alpine", shell="zsh -l"))
+
+    service.enter("dev", "auto")
+
+    assert runner.execs[0][1].command == AUTO_ENTER_SHELL_COMMAND
+    assert runner.execs[0][1].env == ()
+
+
+def test_enter_uses_config_default_shell(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    service = MachineService(
+        AppConfig(defaults=Defaults(shell="bash -l"), profiles={}),
+        MachineStore(tmp_path / "machines"),
+        ShellStateManager(tmp_path / "shell-state"),
+        {"podman": runner},
+    )
+    record = service.create(CreateOptions(name="dev", image="alpine"))
+
+    service.enter("dev")
+
+    assert record.shell is None
+    assert runner.execs[0][1].command == ("bash", "-l")
+    assert runner.execs[0][1].env == ("HISTFILE=/mim/shell-state/.bash_history",)
 
 
 def test_exec_starts_machine_before_running_command(tmp_path: Path) -> None:

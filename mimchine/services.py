@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shlex
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +33,7 @@ from .mounts import map_host_path_to_guest, parse_mount_spec, parse_workspace_sp
 from .parsing import parse_env, parse_network_mode, parse_port_bind
 from .profiles import Profile, load_profile
 from .runners import Runner, get_runner
+from .shells import enter_shell_command, is_auto_shell, normalize_shell
 from .shell_state import ShellStateManager
 from .smolvm_images import PruneResult, SmolvmImageImporter
 from .state import MachineStore
@@ -183,8 +183,13 @@ class MachineService:
         runner = self._runner(record.runner)
         _ensure_running(record, runner)
 
-        shell_command = _split_shell(shell or record.shell or self.config.defaults.shell)
-        exec_env = self.shell_state.env_for_shell(shell_command)
+        selected_shell = shell or record.shell or self.config.defaults.shell
+        shell_command = enter_shell_command(selected_shell)
+        exec_env = (
+            ()
+            if is_auto_shell(selected_shell)
+            else self.shell_state.env_for_shell(shell_command)
+        )
         workdir = _mapped_cwd(record.mounts) or record.workdir
         runner.exec(
             record,
@@ -272,9 +277,7 @@ class MachineService:
             ports=_ports(options, profile),
             env=_env(options, profile),
             workdir=options.workdir or _profile_value(profile, "workdir"),
-            shell=options.shell
-            or _profile_value(profile, "shell")
-            or self.config.defaults.shell,
+            shell=normalize_shell(options.shell or _profile_value(profile, "shell")),
             network=network,
             identity=options.identity
             or _profile_value(profile, "identity")
@@ -465,13 +468,6 @@ def _bool_option(
     if profile_value is not None:
         return profile_value
     return default
-
-
-def _split_shell(value: str) -> tuple[str, ...]:
-    parts = tuple(shlex.split(value))
-    if not parts:
-        raise ValueError("shell cannot be empty")
-    return parts
 
 
 def _mapped_cwd(mounts: Iterable[MountSpec]) -> str | None:

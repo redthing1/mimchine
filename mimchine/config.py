@@ -9,6 +9,7 @@ from platformdirs import user_config_dir
 
 from .domain import NetworkMode
 from .log import logger
+from .shells import normalize_shell
 
 
 SUPPORTED_BUILDERS = ("podman", "docker")
@@ -22,7 +23,7 @@ class Defaults:
     builder: str = "podman"
     runner: str = "podman"
     network: NetworkMode = NetworkMode.DEFAULT
-    shell: str = "sh"
+    shell: str | None = None
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,7 @@ DEFAULT_CONFIG_TOML = """[defaults]
 builder = "podman"
 runner = "podman"
 network = "default"
-shell = "sh"
+shell = "auto"
 """
 
 
@@ -103,7 +104,7 @@ def _read_defaults(data: Any) -> Defaults:
     builder = str(data.get("builder", "podman")).strip()
     runner = str(data.get("runner", "podman")).strip()
     network = NetworkMode(str(data.get("network", "default")).strip())
-    shell = str(data.get("shell", "sh")).strip() or "sh"
+    shell = _read_shell(data.get("shell"))
 
     validate_builder(builder)
     validate_runner(runner)
@@ -123,3 +124,7 @@ def validate_runner(name: str) -> str:
         expected = ", ".join(SUPPORTED_RUNNERS)
         raise ValueError(f"unsupported runner [{name}], expected one of: {expected}")
     return name
+
+
+def _read_shell(value: Any) -> str | None:
+    return normalize_shell(None if value is None else str(value))

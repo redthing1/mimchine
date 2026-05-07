@@ -74,7 +74,7 @@ your config file is at `~/.config/mimchine/config.toml`
 builder = "podman"
 runner = "podman"
 network = "default"
-shell = "sh"
+shell = "auto"
 
 [profiles.work]
 image = "mim-fed:dev"

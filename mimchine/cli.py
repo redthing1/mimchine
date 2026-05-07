@@ -357,7 +357,8 @@ def list_machines() -> None:
 @app.command(no_args_is_help=True)
 def inspect(name: str = typer.Argument(..., help="Machine name.")) -> None:
     def action() -> None:
-        view = MachineService.default().inspect(name)
+        service = MachineService.default()
+        view = service.inspect(name)
         record = view.record
         print_key_value_table(
             f"mimchine {record.name}",
@@ -369,7 +370,7 @@ def inspect(name: str = typer.Argument(..., help="Machine name.")) -> None:
                 ("image", record.image.display()),
                 ("network", record.network.mode.value),
                 ("workdir", record.workdir or ""),
-                ("shell", record.shell or ""),
+                ("shell", record.shell or service.config.defaults.shell or "auto"),
                 ("created", record.created_at),
             ],
         )
