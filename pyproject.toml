@@ -1,6 +1,6 @@
 [project]
 name = "mimchine"
-version = "0.32.0"
+version = "0.34.0"
 description = "ergonomic local development machines"
 readme = "README.md"
 requires-python = ">=3.11"
