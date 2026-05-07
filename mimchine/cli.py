@@ -126,6 +126,12 @@ def create(
         "-W",
         help="Mount host directory at /work/NAME, or HOST:GUEST[:ro].",
     ),
+    home_shares: list[str] = typer.Option(
+        [],
+        "--home-share",
+        "-H",
+        help="Mount host-home directory at the same path and under /home/user.",
+    ),
     mounts: list[str] = typer.Option(
         [],
         "--mount",
@@ -205,6 +211,7 @@ def create(
                 runner=runner,
                 profile=profile,
                 workspaces=tuple(workspaces),
+                home_shares=tuple(home_shares),
                 mounts=tuple(mounts),
                 ports=tuple(ports),
                 env=tuple(env),

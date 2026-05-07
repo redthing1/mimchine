@@ -37,6 +37,8 @@ def test_build_cli_passes_canonical_options(monkeypatch, tmp_path: Path) -> None
 def test_create_cli_passes_machine_intent(monkeypatch, tmp_path: Path) -> None:
     workspace = tmp_path / "project"
     workspace.mkdir()
+    home_share = tmp_path / "home" / "fed" / "Dev"
+    home_share.mkdir(parents=True)
     captured = {}
 
     class FakeMachineService:
@@ -60,6 +62,8 @@ def test_create_cli_passes_machine_intent(monkeypatch, tmp_path: Path) -> None:
             "podman",
             "-W",
             str(workspace),
+            "-H",
+            str(home_share),
             "--no-net",
             "--host-user",
         ],
@@ -71,6 +75,7 @@ def test_create_cli_passes_machine_intent(monkeypatch, tmp_path: Path) -> None:
     assert options.image == "fedora:latest"
     assert options.runner == "podman"
     assert options.workspaces == (str(workspace),)
+    assert options.home_shares == (str(home_share),)
     assert options.network is NetworkMode.NONE
     assert options.identity.mode is IdentityMode.HOST
 

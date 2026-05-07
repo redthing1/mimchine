@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from mimchine.mounts import map_host_path_to_guest, parse_mount_spec, parse_workspace_spec
+from mimchine.mounts import (
+    map_host_path_to_guest,
+    parse_home_share_spec,
+    parse_mount_spec,
+    parse_workspace_spec,
+)
 
 
 def test_workspace_defaults_to_work_dir(tmp_path: Path) -> None:
@@ -33,6 +38,39 @@ def test_mount_rejects_special_files(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="directory or regular file"):
         parse_mount_spec(f"{fifo}:/pipe")
+
+
+def test_home_share_maps_host_home_relative_path_twice(tmp_path: Path) -> None:
+    host_home = tmp_path / "home" / "fed"
+    source = host_home / "Dev"
+    source.mkdir(parents=True)
+
+    mounts = parse_home_share_spec(str(source), host_home=host_home)
+
+    assert [(mount.source, mount.target, mount.kind) for mount in mounts] == [
+        (source.resolve(), str(source.resolve()), "home_share"),
+        (source.resolve(), "/home/user/Dev", "home_share"),
+    ]
+
+
+def test_home_share_accepts_read_only_mode(tmp_path: Path) -> None:
+    host_home = tmp_path / "home" / "fed"
+    source = host_home / "Downloads" / "Work"
+    source.mkdir(parents=True)
+
+    mounts = parse_home_share_spec(f"{source}:ro", host_home=host_home)
+
+    assert all(mount.read_only for mount in mounts)
+    assert mounts[1].target == "/home/user/Downloads/Work"
+
+
+def test_home_share_rejects_paths_outside_host_home(tmp_path: Path) -> None:
+    host_home = tmp_path / "home" / "fed"
+    outside = tmp_path / "srv" / "data"
+    outside.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="under host home"):
+        parse_home_share_spec(str(outside), host_home=host_home)
 
 
 def test_map_host_path_to_guest_uses_most_specific_mount(tmp_path: Path) -> None:

@@ -12,6 +12,8 @@ PROFILE_KEYS = {
     "runner",
     "workspace",
     "workspaces",
+    "home_share",
+    "home_shares",
     "mount",
     "mounts",
     "port",
@@ -36,6 +38,7 @@ class Profile:
     image: str | None = None
     runner: str | None = None
     workspaces: tuple[str, ...] = ()
+    home_shares: tuple[str, ...] = ()
     mounts: tuple[str, ...] = ()
     ports: tuple[str, ...] = ()
     env: tuple[str, ...] = ()
@@ -83,6 +86,7 @@ def read_profile(name: str, data: dict[str, Any]) -> Profile:
         image=_optional_text(data.get("image")),
         runner=runner,
         workspaces=_read_str_tuple(data, "workspace", "workspaces"),
+        home_shares=_read_str_tuple(data, "home_share", "home_shares"),
         mounts=_read_str_tuple(data, "mount", "mounts"),
         ports=_read_str_tuple(data, "port", "ports"),
         env=_read_str_tuple(data, "env"),

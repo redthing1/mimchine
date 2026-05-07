@@ -8,6 +8,7 @@ from .domain import MountSpec
 
 
 DEFAULT_WORKSPACE_BASE = "/work"
+DEFAULT_GUEST_HOME = "/home/user"
 
 
 def parse_mount_spec(value: str) -> MountSpec:
@@ -27,6 +28,53 @@ def parse_workspace_spec(value: str) -> MountSpec:
         read_only=mode == "ro",
         kind="workspace",
     )
+
+
+def parse_home_share_spec(
+    value: str,
+    *,
+    host_home: Path | None = None,
+    guest_home: str = DEFAULT_GUEST_HOME,
+) -> tuple[MountSpec, ...]:
+    source, mode = _parse_home_share_parts(value)
+    if not source.is_dir():
+        raise ValueError(f"home-share path is not a directory: {source}")
+
+    resolved_host_home = (host_home or Path.home()).resolve()
+    try:
+        common = os.path.commonpath([source, resolved_host_home])
+    except ValueError as exc:
+        raise ValueError(f"home-share path is not under host home: {source}") from exc
+    if Path(common) != resolved_host_home:
+        raise ValueError(f"home-share path is not under host home: {source}")
+
+    guest_home = _validate_target(guest_home)
+    rel = os.path.relpath(source, resolved_host_home)
+    guest_target = (
+        guest_home
+        if rel == "."
+        else posixpath.join(guest_home, rel.replace(os.sep, "/"))
+    )
+    read_only = mode == "ro"
+
+    mounts = [
+        MountSpec(
+            source=source,
+            target=str(source),
+            read_only=read_only,
+            kind="home_share",
+        )
+    ]
+    if guest_target != str(source):
+        mounts.append(
+            MountSpec(
+                source=source,
+                target=guest_target,
+                read_only=read_only,
+                kind="home_share",
+            )
+        )
+    return tuple(mounts)
 
 
 def map_host_path_to_guest(host_path: Path, mounts: tuple[MountSpec, ...]) -> str | None:
@@ -81,6 +129,22 @@ def _parse_parts(value: str, *, require_target: bool) -> tuple[Path, str | None,
         raise ValueError(f"mount target is required: {value}")
 
     return source, target, mode
+
+
+def _parse_home_share_parts(value: str) -> tuple[Path, str]:
+    parts = [part.strip() for part in value.strip().split(":")]
+    if len(parts) == 0 or any(part == "" for part in parts):
+        raise ValueError(f"invalid home-share spec: {value}")
+    if len(parts) > 2:
+        raise ValueError(f"invalid home-share spec: {value}")
+
+    source = Path(os.path.expanduser(parts[0])).resolve()
+    if not source.exists():
+        raise ValueError(f"home-share source does not exist: {source}")
+    mode = "rw"
+    if len(parts) == 2:
+        mode = _validate_mode(parts[1])
+    return source, mode
 
 
 def _validate_target(value: str) -> str:

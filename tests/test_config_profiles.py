@@ -51,6 +51,7 @@ def test_read_profile_normalizes_supported_fields() -> None:
             "image": "fedora:latest",
             "runner": "smolvm",
             "workspace": "./src",
+            "home_shares": ["~/Dev"],
             "mounts": ["./cache:/cache:ro"],
             "ports": ["8080:80"],
             "env": ["MODE=dev"],
@@ -65,6 +66,7 @@ def test_read_profile_normalizes_supported_fields() -> None:
     assert profile.image == "fedora:latest"
     assert profile.runner == "smolvm"
     assert profile.workspaces == ("./src",)
+    assert profile.home_shares == ("~/Dev",)
     assert profile.mounts == ("./cache:/cache:ro",)
     assert profile.network is NetworkMode.NONE
     assert profile.identity is not None

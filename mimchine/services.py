@@ -29,7 +29,12 @@ from .domain import (
     ShellStateSpec,
 )
 from .log import logger
-from .mounts import map_host_path_to_guest, parse_mount_spec, parse_workspace_spec
+from .mounts import (
+    map_host_path_to_guest,
+    parse_home_share_spec,
+    parse_mount_spec,
+    parse_workspace_spec,
+)
 from .parsing import parse_env, parse_network_mode, parse_port_bind
 from .profiles import Profile, load_profile
 from .runners import Runner, get_runner
@@ -59,6 +64,7 @@ class CreateOptions:
     runner: str | None = None
     profile: str | None = None
     workspaces: tuple[str, ...] = ()
+    home_shares: tuple[str, ...] = ()
     mounts: tuple[str, ...] = ()
     ports: tuple[str, ...] = ()
     env: tuple[str, ...] = ()
@@ -392,11 +398,16 @@ def _try_delete_backend(runner: Runner, record: MachineRecord) -> None:
 
 def _mounts(options: CreateOptions, profile: Profile | None) -> tuple[MountSpec, ...]:
     workspace_specs = _tuple_profile_value(profile, "workspaces") + options.workspaces
-    mount_specs = _tuple_profile_value(profile, "mounts") + options.mounts
-    return tuple(
-        [parse_workspace_spec(value) for value in workspace_specs]
-        + [parse_mount_spec(value) for value in mount_specs]
+    home_share_specs = (
+        _tuple_profile_value(profile, "home_shares") + options.home_shares
     )
+    mount_specs = _tuple_profile_value(profile, "mounts") + options.mounts
+    mounts: list[MountSpec] = []
+    mounts.extend(parse_workspace_spec(value) for value in workspace_specs)
+    for value in home_share_specs:
+        mounts.extend(parse_home_share_spec(value))
+    mounts.extend(parse_mount_spec(value) for value in mount_specs)
+    return tuple(mounts)
 
 
 def _ports(options: CreateOptions, profile: Profile | None) -> tuple[PortBind, ...]:

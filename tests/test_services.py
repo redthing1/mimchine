@@ -118,6 +118,45 @@ def test_create_merges_profile_and_cli_into_record(tmp_path: Path) -> None:
     assert record.shell == "bash -l"
 
 
+def test_create_expands_home_share_mounts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host_home = tmp_path / "home" / "fed"
+    dev = host_home / "Dev"
+    work = host_home / "Downloads" / "Work"
+    dev.mkdir(parents=True)
+    work.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(host_home))
+
+    runner = FakeRunner()
+    service = _service(
+        tmp_path,
+        runner,
+        profiles={"binavibe": {"home_share": str(dev)}},
+    )
+
+    record = service.create(
+        CreateOptions(
+            name="binavibe",
+            image="localhost/binavibe:latest",
+            profile="binavibe",
+            home_shares=(str(work),),
+        )
+    )
+
+    assert [
+        (mount.source, mount.target, mount.kind)
+        for mount in record.mounts
+        if mount.kind == "home_share"
+    ] == [
+        (dev.resolve(), str(dev.resolve()), "home_share"),
+        (dev.resolve(), "/home/user/Dev", "home_share"),
+        (work.resolve(), str(work.resolve()), "home_share"),
+        (work.resolve(), "/home/user/Downloads/Work", "home_share"),
+    ]
+
+
 def test_enter_starts_machine_and_execs_shell_from_mapped_cwd(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
