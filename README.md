@@ -75,6 +75,10 @@ builder = "podman"
 runner = "podman"
 network = "default"
 shell = "auto"
+cpus = 2
+memory = 2048
+storage = 12
+overlay = 4
 
 [profiles.work]
 image = "mim-fed:dev"
@@ -82,7 +86,6 @@ workspace = "."
 env = ["EDITOR=nvim"]
 network = "none"
 identity = "host"
-shell = "zsh -l"
 ```
 
 use a profile:
