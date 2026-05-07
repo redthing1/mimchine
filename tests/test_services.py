@@ -265,7 +265,7 @@ def test_enter_starts_machine_and_execs_shell_from_mapped_cwd(
     assert spec.interactive is True
     assert spec.tty is True
     assert spec.workdir == "/work/workspace"
-    assert spec.env == ()
+    assert spec.env == ("MIM_MACHINE=dev", "MIM_RUNNER=podman")
 
 
 def test_enter_uses_explicit_shell_from_record(tmp_path: Path) -> None:
@@ -276,7 +276,11 @@ def test_enter_uses_explicit_shell_from_record(tmp_path: Path) -> None:
     service.enter("dev")
 
     assert runner.execs[0][1].command == ("zsh", "-l")
-    assert runner.execs[0][1].env == ("HISTFILE=/mim/shell-state/.zsh_history",)
+    assert runner.execs[0][1].env == (
+        "MIM_MACHINE=dev",
+        "MIM_RUNNER=podman",
+        "HISTFILE=/mim/shell-state/.zsh_history",
+    )
 
 
 def test_enter_does_not_set_shell_state_env_when_disabled(tmp_path: Path) -> None:
@@ -297,7 +301,7 @@ def test_enter_does_not_set_shell_state_env_when_disabled(tmp_path: Path) -> Non
     service.enter("dev")
 
     assert runner.execs[0][1].command == ("zsh", "-l")
-    assert runner.execs[0][1].env == ()
+    assert runner.execs[0][1].env == ("MIM_MACHINE=dev", "MIM_RUNNER=podman")
 
 
 def test_enter_shell_flag_overrides_record_shell(tmp_path: Path) -> None:
@@ -308,7 +312,7 @@ def test_enter_shell_flag_overrides_record_shell(tmp_path: Path) -> None:
     service.enter("dev", "auto")
 
     assert runner.execs[0][1].command == AUTO_ENTER_SHELL_COMMAND
-    assert runner.execs[0][1].env == ()
+    assert runner.execs[0][1].env == ("MIM_MACHINE=dev", "MIM_RUNNER=podman")
 
 
 def test_enter_uses_config_default_shell(tmp_path: Path) -> None:
@@ -325,7 +329,11 @@ def test_enter_uses_config_default_shell(tmp_path: Path) -> None:
 
     assert record.shell is None
     assert runner.execs[0][1].command == ("bash", "-l")
-    assert runner.execs[0][1].env == ("HISTFILE=/mim/shell-state/.bash_history",)
+    assert runner.execs[0][1].env == (
+        "MIM_MACHINE=dev",
+        "MIM_RUNNER=podman",
+        "HISTFILE=/mim/shell-state/.bash_history",
+    )
 
 
 def test_exec_starts_machine_before_running_command(tmp_path: Path) -> None:

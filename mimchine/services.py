@@ -194,11 +194,12 @@ class MachineService:
 
         selected_shell = shell or record.shell or self.config.defaults.shell
         shell_command = enter_shell_command(selected_shell)
-        exec_env = (
+        shell_env = (
             ()
             if is_auto_shell(selected_shell) or not record.shell_state.enabled
             else self.shell_state.env_for_shell(shell_command)
         )
+        exec_env = (f"MIM_MACHINE={record.name}", f"MIM_RUNNER={record.runner}", *shell_env)
         workdir = _mapped_cwd(record.mounts) or record.workdir
         runner.exec(
             record,
