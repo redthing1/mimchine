@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from os import terminal_size
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from mimchine.builders import PodmanBuilder
 from mimchine.domain import (
     BuildSpec,
+    ExecSpec,
     IdentityMode,
     IdentitySpec,
     ImageSource,
@@ -223,3 +225,45 @@ def test_smolvm_runner_status_parses_not_running_before_running() -> None:
     status = SmolvmRunner(runner).inspect(record)
 
     assert status.state is RuntimeState.STOPPED
+
+
+def test_smolvm_runner_exec_sets_guest_tty_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "mimchine.runners.smolvm.get_terminal_size",
+        lambda *, fallback: terminal_size((132, 43)),
+    )
+    runner = RecordingProcessRunner()
+    record = MachineRecord.from_spec(
+        MachineSpec("vm", ImageSource.oci_reference("alpine"), "smolvm"),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    SmolvmRunner(runner).exec(
+        record,
+        ExecSpec(("zsh", "-l"), interactive=True, tty=True),
+    )
+
+    assert runner.calls[0] == (
+        "smolvm",
+        "machine",
+        "exec",
+        "--name",
+        "vm",
+        "-i",
+        "-t",
+        "-e",
+        "COLUMNS=132",
+        "-e",
+        "LINES=43",
+        "--",
+        "sh",
+        "-lc",
+        'stty cols "$1" rows "$2" 2>/dev/null || true; shift 2; exec "$@"',
+        "mimchine-tty",
+        "132",
+        "43",
+        "zsh",
+        "-l",
+    )

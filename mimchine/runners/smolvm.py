@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from shutil import get_terminal_size
+
 from ..domain import (
     ExecSpec,
     ImageSourceKind,
@@ -88,12 +90,18 @@ class SmolvmRunner:
             args.append("-t")
         if spec.stream:
             args.append("--stream")
-        for env in spec.env:
-            args.extend(["-e", env])
+        command = spec.command
+        env_vars = spec.env
+        if spec.tty:
+            size = _terminal_size(env_vars)
+            env_vars = _terminal_size_env(env_vars, size)
+            command = _terminal_size_command(command, size)
+        for env_var in env_vars:
+            args.extend(["-e", env_var])
         if spec.workdir:
             args.extend(["-w", spec.workdir])
         args.append("--")
-        args.extend(spec.command)
+        args.extend(command)
         self.runner.run(args, foreground=True)
 
     def inspect(self, record: MachineRecord) -> RuntimeStatus:
@@ -156,3 +164,58 @@ def _resource_args(record: MachineRecord) -> list[str]:
     if resources.overlay_gib is not None:
         args.extend(["--overlay", str(resources.overlay_gib)])
     return args
+
+
+def _terminal_size(env: tuple[str, ...]) -> tuple[int, int]:
+    fallback = get_terminal_size(fallback=(80, 24))
+    columns = _positive_env_int(env, "COLUMNS") or max(fallback.columns, 1)
+    lines = _positive_env_int(env, "LINES") or max(fallback.lines, 1)
+    return columns, lines
+
+
+def _terminal_size_env(
+    env: tuple[str, ...],
+    size: tuple[int, int],
+) -> tuple[str, ...]:
+    columns, lines = size
+    additions: list[str] = []
+    if _env_value(env, "COLUMNS") is None:
+        additions.append(f"COLUMNS={columns}")
+    if _env_value(env, "LINES") is None:
+        additions.append(f"LINES={lines}")
+    return (*env, *additions)
+
+
+def _terminal_size_command(
+    command: tuple[str, ...],
+    size: tuple[int, int],
+) -> tuple[str, ...]:
+    columns, lines = size
+    return (
+        "sh",
+        "-lc",
+        'stty cols "$1" rows "$2" 2>/dev/null || true; shift 2; exec "$@"',
+        "mimchine-tty",
+        str(columns),
+        str(lines),
+        *command,
+    )
+
+
+def _positive_env_int(env: tuple[str, ...], key: str) -> int | None:
+    value = _env_value(env, key)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _env_value(env: tuple[str, ...], key: str) -> str | None:
+    prefix = f"{key}="
+    for item in env:
+        if item.startswith(prefix):
+            return item[len(prefix) :]
+    return None
