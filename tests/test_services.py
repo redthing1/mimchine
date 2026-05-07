@@ -13,6 +13,7 @@ from mimchine.domain import (
     ImageSource,
     ImageSourceKind,
     NetworkMode,
+    ResourceSpec,
     RunnerCapabilities,
     RuntimeState,
     RuntimeStatus,
@@ -118,6 +119,91 @@ def test_create_merges_profile_and_cli_into_record(tmp_path: Path) -> None:
     assert record.shell == "bash -l"
 
 
+def test_create_merges_resource_defaults_profile_and_cli(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    config = AppConfig(
+        defaults=Defaults(
+            resources=ResourceSpec(
+                cpus=2,
+                memory_mib=4096,
+                storage_gib=16,
+                overlay_gib=8,
+            )
+        ),
+        profiles={
+            "vm": {
+                "image": "fedora:latest",
+                "cpus": 4,
+                "memory": 8192,
+            }
+        },
+    )
+    service = MachineService(
+        config,
+        MachineStore(tmp_path / "machines"),
+        ShellStateManager(tmp_path / "shell-state"),
+        {"podman": runner},
+    )
+
+    record = service.create(
+        CreateOptions(
+            name="dev",
+            profile="vm",
+            resources=ResourceSpec(cpus=6),
+        )
+    )
+
+    assert record.resources.cpus == 6
+    assert record.resources.memory_mib == 8192
+    assert record.resources.storage_gib == 16
+    assert record.resources.overlay_gib == 8
+
+
+def test_profile_can_disable_shell_state(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner = FakeRunner()
+    service = _service(
+        tmp_path,
+        runner,
+        profiles={
+            "isolated": {
+                "image": "fedora:latest",
+                "workspace": str(workspace),
+                "shell_state": False,
+            }
+        },
+    )
+
+    record = service.create(CreateOptions(name="box", profile="isolated"))
+
+    assert record.shell_state.enabled is False
+    assert [mount.kind for mount in record.mounts] == ["workspace"]
+    assert not (tmp_path / "shell-state" / "box").exists()
+
+
+def test_cli_can_enable_shell_state_over_profile(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    service = _service(
+        tmp_path,
+        runner,
+        profiles={
+            "isolated": {
+                "image": "fedora:latest",
+                "shell_state": False,
+            }
+        },
+    )
+
+    record = service.create(
+        CreateOptions(name="box", profile="isolated", shell_state=True)
+    )
+
+    assert record.shell_state.enabled is True
+    assert [mount.kind for mount in record.mounts] == ["shell_state"]
+    assert (tmp_path / "shell-state" / "box").exists()
+
+
 def test_create_expands_home_share_mounts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -191,6 +277,27 @@ def test_enter_uses_explicit_shell_from_record(tmp_path: Path) -> None:
 
     assert runner.execs[0][1].command == ("zsh", "-l")
     assert runner.execs[0][1].env == ("HISTFILE=/mim/shell-state/.zsh_history",)
+
+
+def test_enter_does_not_set_shell_state_env_when_disabled(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    service = _service(
+        tmp_path,
+        runner,
+        profiles={
+            "isolated": {
+                "image": "alpine",
+                "shell": "zsh -l",
+                "shell_state": False,
+            }
+        },
+    )
+    service.create(CreateOptions(name="dev", profile="isolated"))
+
+    service.enter("dev")
+
+    assert runner.execs[0][1].command == ("zsh", "-l")
+    assert runner.execs[0][1].env == ()
 
 
 def test_enter_shell_flag_overrides_record_shell(tmp_path: Path) -> None:

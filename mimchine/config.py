@@ -7,7 +7,7 @@ from typing import Any
 
 from platformdirs import user_config_dir
 
-from .domain import NetworkMode
+from .domain import NetworkMode, ResourceSpec
 from .log import logger
 from .shells import normalize_shell
 
@@ -15,7 +15,16 @@ from .shells import normalize_shell
 SUPPORTED_BUILDERS = ("podman", "docker")
 SUPPORTED_RUNNERS = ("podman", "docker", "smolvm")
 SUPPORTED_TOP_LEVEL_TABLES = ("defaults", "profiles")
-SUPPORTED_DEFAULT_KEYS = ("builder", "runner", "network", "shell")
+SUPPORTED_DEFAULT_KEYS = (
+    "builder",
+    "runner",
+    "network",
+    "shell",
+    "cpus",
+    "memory",
+    "storage",
+    "overlay",
+)
 
 
 @dataclass(frozen=True)
@@ -24,6 +33,7 @@ class Defaults:
     runner: str = "podman"
     network: NetworkMode = NetworkMode.DEFAULT
     shell: str | None = None
+    resources: ResourceSpec = ResourceSpec()
 
 
 @dataclass(frozen=True)
@@ -109,7 +119,28 @@ def _read_defaults(data: Any) -> Defaults:
     validate_builder(builder)
     validate_runner(runner)
 
-    return Defaults(builder=builder, runner=runner, network=network, shell=shell)
+    return Defaults(
+        builder=builder,
+        runner=runner,
+        network=network,
+        shell=shell,
+        resources=ResourceSpec(
+            cpus=_optional_int(data.get("cpus")),
+            memory_mib=_optional_int(data.get("memory")),
+            storage_gib=_optional_int(data.get("storage")),
+            overlay_gib=_optional_int(data.get("overlay")),
+        ),
+    )
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("expected integer value")
+    if value <= 0:
+        raise ValueError("expected positive integer value")
+    return value
 
 
 def validate_builder(name: str) -> str:

@@ -9,7 +9,7 @@ from platformdirs import user_cache_dir
 from platformdirs import user_data_dir
 
 from .builders import Builder, get_builder
-from .config import AppConfig, load_config, validate_builder, validate_runner
+from .config import AppConfig, Defaults, load_config, validate_builder, validate_runner
 from .domain import (
     BuildSpec,
     ExecSpec,
@@ -77,7 +77,7 @@ class CreateOptions:
     gpu: bool | None = None
     resources: ResourceSpec = ResourceSpec()
     identity: IdentitySpec | None = None
-    shell_state: bool = True
+    shell_state: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -139,10 +139,13 @@ class MachineService:
             raise ValueError(f"machine [{options.name}] already exists")
 
         profile = load_profile(self.config, options.profile)
-        shell_state_preexisted = (
-            options.shell_state and self.shell_state.path_for(options.name).exists()
+        shell_state_enabled = _bool_option(
+            options.shell_state, profile, "shell_state", True
         )
-        record = self._record_from_options(options, profile)
+        shell_state_preexisted = (
+            shell_state_enabled and self.shell_state.path_for(options.name).exists()
+        )
+        record = self._record_from_options(options, profile, shell_state_enabled)
         runner = self._runner(record.runner)
 
         try:
@@ -193,7 +196,7 @@ class MachineService:
         shell_command = enter_shell_command(selected_shell)
         exec_env = (
             ()
-            if is_auto_shell(selected_shell)
+            if is_auto_shell(selected_shell) or not record.shell_state.enabled
             else self.shell_state.env_for_shell(shell_command)
         )
         workdir = _mapped_cwd(record.mounts) or record.workdir
@@ -259,6 +262,7 @@ class MachineService:
         self,
         options: CreateOptions,
         profile: Profile | None,
+        shell_state_enabled: bool,
     ) -> MachineRecord:
         image = options.image or _profile_value(profile, "image")
         if image is None:
@@ -270,9 +274,9 @@ class MachineService:
             or self.config.defaults.runner
         )
         network = _network_spec(options, profile, self.config.defaults.network)
-        resources = _resource_spec(options, profile)
+        resources = _resource_spec(options, profile, self.config.defaults)
         mounts = _mounts(options, profile)
-        if options.shell_state:
+        if shell_state_enabled:
             mounts = (*mounts, self.shell_state.mount_for(options.name))
 
         spec = MachineSpec(
@@ -289,7 +293,7 @@ class MachineService:
             or _profile_value(profile, "identity")
             or IdentitySpec(),
             resources=resources,
-            shell_state=ShellStateSpec(enabled=options.shell_state),
+            shell_state=ShellStateSpec(enabled=shell_state_enabled),
             ssh_agent=_bool_option(options.ssh_agent, profile, "ssh_agent", False),
             gpu=_bool_option(options.gpu, profile, "gpu", False),
         )
@@ -446,12 +450,24 @@ def _network_spec(
     )
 
 
-def _resource_spec(options: CreateOptions, profile: Profile | None) -> ResourceSpec:
+def _resource_spec(
+    options: CreateOptions,
+    profile: Profile | None,
+    defaults: Defaults,
+) -> ResourceSpec:
     return ResourceSpec(
-        cpus=options.resources.cpus or _profile_value(profile, "cpus"),
-        memory_mib=options.resources.memory_mib or _profile_value(profile, "memory"),
-        storage_gib=options.resources.storage_gib or _profile_value(profile, "storage"),
-        overlay_gib=options.resources.overlay_gib or _profile_value(profile, "overlay"),
+        cpus=options.resources.cpus
+        or _profile_value(profile, "cpus")
+        or defaults.resources.cpus,
+        memory_mib=options.resources.memory_mib
+        or _profile_value(profile, "memory")
+        or defaults.resources.memory_mib,
+        storage_gib=options.resources.storage_gib
+        or _profile_value(profile, "storage")
+        or defaults.resources.storage_gib,
+        overlay_gib=options.resources.overlay_gib
+        or _profile_value(profile, "overlay")
+        or defaults.resources.overlay_gib,
     )
 
 

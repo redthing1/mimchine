@@ -197,9 +197,10 @@ def create(
     ),
     root: bool = typer.Option(False, "--root", help="Run as root."),
     host_user: bool = typer.Option(False, "--host-user", help="Run as the host user."),
-    shell_state: bool = typer.Option(
-        True,
+    shell_state: Optional[bool] = typer.Option(
+        None,
         "--shell-state/--no-shell-state",
+        show_default=False,
         help="Persist shell history for enter.",
     ),
 ) -> None:

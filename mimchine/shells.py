@@ -36,14 +36,19 @@ AUTO_ENTER_SHELL_SCRIPT = dedent(f"""\
     fi
 
     shell_name="$(basename "$shell")"
+    shell_state_dir="{SHELL_STATE_GUEST_DIR}"
 
     case "$shell_name" in
       zsh)
-        export HISTFILE="${{HISTFILE:-{SHELL_STATE_GUEST_DIR}/.zsh_history}}"
+        if [ -d "$shell_state_dir" ]; then
+          export HISTFILE="${{HISTFILE:-$shell_state_dir/.zsh_history}}"
+        fi
         exec "$shell" -l
         ;;
       bash)
-        export HISTFILE="${{HISTFILE:-{SHELL_STATE_GUEST_DIR}/.bash_history}}"
+        if [ -d "$shell_state_dir" ]; then
+          export HISTFILE="${{HISTFILE:-$shell_state_dir/.bash_history}}"
+        fi
         exec "$shell" -l
         ;;
       *)

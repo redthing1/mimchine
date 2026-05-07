@@ -23,6 +23,7 @@ PROFILE_KEYS = {
     "network",
     "identity",
     "shell",
+    "shell_state",
     "ssh_agent",
     "gpu",
     "cpus",
@@ -46,6 +47,7 @@ class Profile:
     network: NetworkMode | None = None
     identity: IdentitySpec | None = None
     shell: str | None = None
+    shell_state: bool | None = None
     ssh_agent: bool | None = None
     gpu: bool | None = None
     cpus: int | None = None
@@ -94,6 +96,7 @@ def read_profile(name: str, data: dict[str, Any]) -> Profile:
         network=network,
         identity=identity,
         shell=_optional_text(data.get("shell")),
+        shell_state=_optional_bool(data.get("shell_state")),
         ssh_agent=_optional_bool(data.get("ssh_agent")),
         gpu=_optional_bool(data.get("gpu")),
         cpus=_optional_int(data.get("cpus")),

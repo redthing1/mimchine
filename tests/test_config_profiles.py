@@ -28,6 +28,29 @@ def test_config_shell_auto_means_no_shell_preference(tmp_path: Path) -> None:
     assert config.defaults.shell is None
 
 
+def test_config_accepts_resource_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "\n".join(
+            (
+                "[defaults]",
+                "cpus = 2",
+                "memory = 4096",
+                "storage = 16",
+                "overlay = 8",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert config.defaults.resources.cpus == 2
+    assert config.defaults.resources.memory_mib == 4096
+    assert config.defaults.resources.storage_gib == 16
+    assert config.defaults.resources.overlay_gib == 8
+
+
 def test_load_config_rejects_unknown_top_level_table(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text("[unexpected]\nvalue = true\n", encoding="utf-8")
@@ -57,6 +80,7 @@ def test_read_profile_normalizes_supported_fields() -> None:
             "env": ["MODE=dev"],
             "network": "none",
             "identity": "host",
+            "shell_state": False,
             "ssh_agent": True,
             "gpu": True,
             "cpus": 2,
@@ -71,6 +95,7 @@ def test_read_profile_normalizes_supported_fields() -> None:
     assert profile.network is NetworkMode.NONE
     assert profile.identity is not None
     assert profile.identity.mode is IdentityMode.HOST
+    assert profile.shell_state is False
     assert profile.ssh_agent is True
     assert profile.gpu is True
     assert profile.cpus == 2
