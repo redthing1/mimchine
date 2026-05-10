@@ -96,6 +96,7 @@ def test_create_merges_profile_and_cli_into_record(tmp_path: Path) -> None:
                 "network": "none",
                 "identity": "host",
                 "shell": "bash -l",
+                "container_args": ["--device=vendor.example/gpu=all"],
             }
         },
     )
@@ -106,6 +107,7 @@ def test_create_merges_profile_and_cli_into_record(tmp_path: Path) -> None:
             profile="dev",
             env=("CLI=1",),
             ports=("8080:80",),
+            container_args=("--cap-drop=all",),
         )
     )
 
@@ -115,6 +117,10 @@ def test_create_merges_profile_and_cli_into_record(tmp_path: Path) -> None:
     assert record.network.mode is NetworkMode.NONE
     assert record.identity.mode is IdentityMode.HOST
     assert record.env == ("PROFILE=1", "CLI=1")
+    assert record.container_args == (
+        "--device=vendor.example/gpu=all",
+        "--cap-drop=all",
+    )
     assert [mount.kind for mount in record.mounts] == ["workspace", "shell_state"]
     assert record.shell == "bash -l"
 

@@ -252,6 +252,7 @@ class MachineSpec:
     shell_state: ShellStateSpec = field(default_factory=ShellStateSpec)
     ssh_agent: bool = False
     gpu: bool = False
+    container_args: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         validate_machine_name(self.name)
@@ -259,6 +260,9 @@ class MachineSpec:
         object.__setattr__(self, "mounts", tuple(self.mounts))
         object.__setattr__(self, "ports", tuple(self.ports))
         object.__setattr__(self, "env", tuple(self.env))
+        object.__setattr__(
+            self, "container_args", tuple(str(x) for x in self.container_args)
+        )
         _validate_bool(self.ssh_agent, "ssh_agent")
         _validate_bool(self.gpu, "gpu")
 
@@ -281,6 +285,7 @@ class MachineRecord:
     shell_state: ShellStateSpec
     ssh_agent: bool
     gpu: bool
+    container_args: tuple[str, ...]
     created_at: str
 
     @classmethod
@@ -302,6 +307,7 @@ class MachineRecord:
             shell_state=spec.shell_state,
             ssh_agent=spec.ssh_agent,
             gpu=spec.gpu,
+            container_args=spec.container_args,
             created_at=created_at,
         )
 
@@ -316,6 +322,9 @@ class MachineRecord:
         object.__setattr__(self, "mounts", tuple(self.mounts))
         object.__setattr__(self, "ports", tuple(self.ports))
         object.__setattr__(self, "env", tuple(self.env))
+        object.__setattr__(
+            self, "container_args", tuple(str(x) for x in self.container_args)
+        )
 
     def to_data(self) -> dict[str, Any]:
         return {
@@ -335,6 +344,7 @@ class MachineRecord:
             "shell_state": self.shell_state.to_data(),
             "ssh_agent": self.ssh_agent,
             "gpu": self.gpu,
+            "container_args": list(self.container_args),
             "created_at": self.created_at,
         }
 
@@ -357,6 +367,7 @@ class MachineRecord:
             shell_state=ShellStateSpec.from_data(dict(data.get("shell_state", {}))),
             ssh_agent=_bool_from_data(data.get("ssh_agent", False), "ssh_agent"),
             gpu=_bool_from_data(data.get("gpu", False), "gpu"),
+            container_args=tuple(str(x) for x in data.get("container_args", [])),
             created_at=str(data["created_at"]),
         )
 

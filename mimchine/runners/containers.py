@@ -71,6 +71,7 @@ class _ContainerRunner:
             args.extend(["-p", port.arg()])
         if record.ssh_agent:
             args.extend(self._ssh_agent_args())
+        args.extend(record.container_args)
         args.extend([record.image.value, "sh", "-lc", KEEPALIVE_COMMAND])
         self.runner.run(args, foreground=True)
 

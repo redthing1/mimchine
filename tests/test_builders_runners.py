@@ -113,6 +113,34 @@ def test_podman_runner_create_uses_record_as_command_source(tmp_path: Path) -> N
     )
 
 
+def test_podman_runner_create_passes_container_args_before_image() -> None:
+    runner = RecordingProcessRunner()
+    record = MachineRecord.from_spec(
+        MachineSpec(
+            name="gpu",
+            image=ImageSource.oci_reference("fedora:latest"),
+            runner="podman",
+            identity=IdentitySpec(IdentityMode.ROOT),
+            container_args=(
+                "--security-opt=label=type:example.process",
+                "--device=vendor.example/gpu=all",
+                "--cap-drop=all",
+            ),
+        ),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    PodmanRunner(runner).create(record)
+
+    command = runner.calls[0]
+    image_index = command.index("fedora:latest")
+    assert command[image_index - 3 : image_index] == (
+        "--security-opt=label=type:example.process",
+        "--device=vendor.example/gpu=all",
+        "--cap-drop=all",
+    )
+
+
 def test_podman_runner_create_maps_image_identity_to_keep_id(tmp_path: Path) -> None:
     runner = RecordingProcessRunner(stdout="1001\n1002\n")
     record = MachineRecord.from_spec(

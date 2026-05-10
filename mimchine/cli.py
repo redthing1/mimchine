@@ -203,6 +203,11 @@ def create(
         show_default=False,
         help="Persist shell history for enter.",
     ),
+    container_args: list[str] = typer.Option(
+        [],
+        "--container-arg",
+        help="Extra argument passed to podman/docker create. May be repeated.",
+    ),
 ) -> None:
     _run(
         lambda: MachineService.default().create(
@@ -231,6 +236,7 @@ def create(
                 ),
                 identity=_identity_from_flags(root, host_user),
                 shell_state=shell_state,
+                container_args=tuple(container_args),
             )
         )
     )
