@@ -9,6 +9,7 @@ from ..domain import (
     IdentityMode,
     ImageSourceKind,
     MachineRecord,
+    MountSpec,
     NetworkMode,
     RunnerCapabilities,
     RuntimeState,
@@ -18,6 +19,7 @@ from ..process import ProcessRunner
 
 
 KEEPALIVE_COMMAND = "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done"
+NEUTRAL_BACKEND_CWD = "/"
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,7 @@ class _ContainerRunner:
         gpu_vulkan=False,
         root_identity=True,
         host_identity=True,
+        mount_options=True,
     )
 
     def __init__(self, runner: ProcessRunner):
@@ -66,7 +69,7 @@ class _ContainerRunner:
         if record.workdir:
             args.extend(["-w", record.workdir])
         for mount in record.mounts:
-            args.extend(["-v", mount.volume_arg()])
+            args.extend(["-v", _container_volume_arg(mount)])
         for port in record.ports:
             args.extend(["-p", port.arg()])
         if record.ssh_agent:
@@ -76,16 +79,25 @@ class _ContainerRunner:
         self.runner.run(args, foreground=True)
 
     def start(self, record: MachineRecord) -> None:
-        self.runner.run([self.binary, "start", record.backend_id], foreground=True)
+        self.runner.run(
+            [self.binary, "start", record.backend_id],
+            foreground=True,
+            cwd=NEUTRAL_BACKEND_CWD,
+        )
 
     def stop(self, record: MachineRecord) -> None:
-        self.runner.run([self.binary, "stop", record.backend_id], foreground=True)
+        self.runner.run(
+            [self.binary, "stop", record.backend_id],
+            foreground=True,
+            cwd=NEUTRAL_BACKEND_CWD,
+        )
 
     def delete(self, record: MachineRecord) -> None:
         self.runner.run(
             [self.binary, "rm", "-f", record.backend_id],
             foreground=True,
             check=False,
+            cwd=NEUTRAL_BACKEND_CWD,
         )
 
     def exec(self, record: MachineRecord, spec: ExecSpec) -> None:
@@ -100,13 +112,14 @@ class _ContainerRunner:
             args.extend(["-w", spec.workdir])
         args.append(record.backend_id)
         args.extend(spec.command)
-        self.runner.run(args, foreground=True)
+        self.runner.run(args, foreground=True, cwd=NEUTRAL_BACKEND_CWD)
 
     def inspect(self, record: MachineRecord) -> RuntimeStatus:
         result = self.runner.run(
             self._inspect_args(record.backend_id),
             capture=True,
             check=False,
+            cwd=NEUTRAL_BACKEND_CWD,
         )
         if result.returncode != 0:
             return RuntimeStatus(
@@ -193,6 +206,12 @@ class PodmanRunner(_ContainerRunner):
 class DockerRunner(_ContainerRunner):
     name = "docker"
     binary = "docker"
+
+
+def _container_volume_arg(mount: MountSpec) -> str:
+    if mount.kind != "shell_state" or {"z", "Z"} & set(mount.options):
+        return mount.volume_arg()
+    return f"{mount.source}:{mount.target}:{mount.mode},Z"
 
 
 def _parse_json_documents(text: str) -> list[dict[str, object]]:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
@@ -41,6 +41,7 @@ CAPS = RunnerCapabilities(
     gpu_vulkan=True,
     root_identity=True,
     host_identity=True,
+    mount_options=True,
 )
 
 
@@ -390,6 +391,27 @@ def test_rejects_runner_unsupported_file_mount(tmp_path: Path) -> None:
                 name="dev",
                 image="alpine",
                 mounts=(f"{file_path}:/config:ro",),
+            )
+        )
+
+
+def test_rejects_mount_options_for_non_container_runner(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner = FakeRunner(name="smolvm", capabilities=replace(CAPS, mount_options=False))
+    service = MachineService(
+        AppConfig(defaults=Defaults(runner="smolvm"), profiles={}),
+        MachineStore(tmp_path / "machines"),
+        ShellStateManager(tmp_path / "shell-state"),
+        {"smolvm": runner},
+    )
+
+    with pytest.raises(ValueError, match="mount options"):
+        service.create(
+            CreateOptions(
+                name="dev",
+                image="alpine",
+                workspaces=(f"{workspace}:rw,z",),
             )
         )
 

@@ -28,12 +28,14 @@ from mimchine.runners import DockerRunner, PodmanRunner, SmolvmRunner
 class RecordingProcessRunner:
     def __init__(self, returncode: int = 0, stdout: str = "[]"):
         self.calls: list[tuple[str, ...]] = []
+        self.cwd: list[str | None] = []
         self.returncode = returncode
         self.stdout = stdout
 
-    def run(self, args, *, capture=False, foreground=False, check=True):
+    def run(self, args, *, capture=False, foreground=False, check=True, cwd=None):
         command = tuple(str(arg) for arg in args)
         self.calls.append(command)
+        self.cwd.append(None if cwd is None else str(cwd))
         return ProcessResult(command, self.returncode, self.stdout, "")
 
 
@@ -111,6 +113,33 @@ def test_podman_runner_create_uses_record_as_command_source(tmp_path: Path) -> N
         "-lc",
         "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done",
     )
+
+
+def test_podman_runner_create_relabels_shell_state_mount(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    state = tmp_path / "state"
+    workspace.mkdir()
+    state.mkdir()
+    runner = RecordingProcessRunner()
+    record = MachineRecord.from_spec(
+        MachineSpec(
+            name="dev",
+            image=ImageSource.oci_reference("fedora:latest"),
+            runner="podman",
+            mounts=(
+                MountSpec(workspace, "/work/dev", kind="workspace"),
+                MountSpec(state, "/mim/shell-state", kind="shell_state"),
+            ),
+            identity=IdentitySpec(IdentityMode.ROOT),
+        ),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    PodmanRunner(runner).create(record)
+
+    command = runner.calls[-1]
+    assert f"{workspace.resolve()}:/work/dev:rw" in command
+    assert f"{state.resolve()}:/mim/shell-state:rw,Z" in command
 
 
 def test_podman_runner_create_passes_container_args_before_image() -> None:
@@ -213,6 +242,23 @@ def test_container_runner_inspect_uses_backend_json_shape() -> None:
     assert docker_process.calls[0] == ("docker", "inspect", "dev")
 
 
+def test_podman_runner_lifecycle_uses_neutral_host_cwd() -> None:
+    runner = RecordingProcessRunner(stdout='[{"State":{"Running":true}}]')
+    record = MachineRecord.from_spec(
+        MachineSpec("dev", ImageSource.oci_reference("alpine"), "podman"),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    podman = PodmanRunner(runner)
+
+    podman.start(record)
+    podman.exec(record, ExecSpec(("pwd",)))
+    podman.inspect(record)
+    podman.stop(record)
+    podman.delete(record)
+
+    assert runner.cwd == ["/", "/", "/", "/", "/"]
+
+
 def test_smolvm_runner_create_maps_machine_flags(tmp_path: Path) -> None:
     runner = RecordingProcessRunner()
     record = MachineRecord.from_spec(
@@ -241,6 +287,26 @@ def test_smolvm_runner_create_maps_machine_flags(tmp_path: Path) -> None:
     assert "-v" in command
     assert "--ssh-agent" in command
     assert "--gpu" in command
+
+
+def test_smolvm_runner_create_keeps_shell_state_mount_plain(tmp_path: Path) -> None:
+    runner = RecordingProcessRunner()
+    record = MachineRecord.from_spec(
+        MachineSpec(
+            name="vm",
+            image=ImageSource.oci_reference("alpine"),
+            runner="smolvm",
+            mounts=(MountSpec(tmp_path, "/mim/shell-state", kind="shell_state"),),
+        ),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    SmolvmRunner(runner).create(record)
+
+    command = runner.calls[0]
+    assert f"{tmp_path.resolve()}:/mim/shell-state:rw" in command
+    assert f"{tmp_path.resolve()}:/mim/shell-state:rw,z" not in command
+    assert f"{tmp_path.resolve()}:/mim/shell-state:rw,Z" not in command
 
 
 def test_smolvm_runner_status_parses_not_running_before_running() -> None:

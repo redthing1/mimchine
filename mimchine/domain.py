@@ -129,6 +129,7 @@ class MountSpec:
     target: str
     read_only: bool = False
     kind: str = "mount"
+    options: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "source", _normalize_path(self.source))
@@ -137,10 +138,20 @@ class MountSpec:
             raise ValueError(f"mount target must be absolute: {target}")
         object.__setattr__(self, "target", target)
         object.__setattr__(self, "kind", _require_text(self.kind, "mount kind"))
+        options = tuple(_require_text(option, "mount option") for option in self.options)
+        for option in options:
+            if ":" in option or "," in option:
+                raise ValueError(f"mount option cannot contain ':' or ',': {option}")
+            if option in {"ro", "rw"}:
+                raise ValueError(f"mount option cannot be an access mode: {option}")
+        object.__setattr__(self, "options", options)
 
     @property
     def mode(self) -> str:
-        return "ro" if self.read_only else "rw"
+        mode = "ro" if self.read_only else "rw"
+        if self.options:
+            return ",".join((mode, *self.options))
+        return mode
 
     def volume_arg(self) -> str:
         return f"{self.source}:{self.target}:{self.mode}"
@@ -151,6 +162,7 @@ class MountSpec:
             "target": self.target,
             "read_only": self.read_only,
             "kind": self.kind,
+            "options": list(self.options),
         }
 
     @classmethod
@@ -160,6 +172,7 @@ class MountSpec:
             target=str(data["target"]),
             read_only=_bool_from_data(data.get("read_only", False), "read_only"),
             kind=str(data.get("kind", "mount")),
+            options=tuple(str(x) for x in data.get("options", [])),
         )
 
 
@@ -422,6 +435,7 @@ class RunnerCapabilities:
     gpu_vulkan: bool
     root_identity: bool
     host_identity: bool
+    mount_options: bool = False
 
 
 def validate_machine_name(name: str) -> str:

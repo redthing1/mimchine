@@ -329,6 +329,8 @@ def _validate_runner_support(record: MachineRecord, runner: Runner) -> None:
             raise ValueError(f"runner [{runner.name}] does not support directory mounts")
         if mount.source.is_file() and not caps.file_mounts:
             raise ValueError(f"runner [{runner.name}] does not support file mounts")
+        if mount.options and not caps.mount_options:
+            raise ValueError(f"runner [{runner.name}] does not support mount options")
 
     if (
         record.image.kind is ImageSourceKind.OCI_REFERENCE
