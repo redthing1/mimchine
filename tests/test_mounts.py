@@ -24,6 +24,18 @@ def test_workspace_defaults_to_work_dir(tmp_path: Path) -> None:
     assert mount.kind == "workspace"
 
 
+def test_workspace_accepts_default_target_with_mount_options(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    mount = parse_workspace_spec(f"{project}:rw,z")
+
+    assert mount.target == "/work/project"
+    assert mount.read_only is False
+    assert mount.options == ("z",)
+    assert mount.mode == "rw,z"
+
+
 def test_mount_requires_absolute_guest_target(tmp_path: Path) -> None:
     path = tmp_path / "config"
     path.write_text("x", encoding="utf-8")
@@ -38,6 +50,45 @@ def test_mount_rejects_special_files(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="directory or regular file"):
         parse_mount_spec(f"{fifo}:/pipe")
+
+
+def test_mount_accepts_relabel_option(tmp_path: Path) -> None:
+    path = tmp_path / "config"
+    path.write_text("x", encoding="utf-8")
+
+    mount = parse_mount_spec(f"{path}:/config:ro,z")
+
+    assert mount.read_only is True
+    assert mount.options == ("z",)
+    assert mount.mode == "ro,z"
+    assert mount.volume_arg().endswith(":/config:ro,z")
+
+
+def test_mount_accepts_generic_option_after_access_mode(tmp_path: Path) -> None:
+    path = tmp_path / "config"
+    path.write_text("x", encoding="utf-8")
+
+    mount = parse_mount_spec(f"{path}:/config:rw,idmap")
+
+    assert mount.read_only is False
+    assert mount.options == ("idmap",)
+    assert mount.mode == "rw,idmap"
+
+
+def test_mount_rejects_unknown_option_without_access_mode(tmp_path: Path) -> None:
+    path = tmp_path / "config"
+    path.write_text("x", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="mount mode"):
+        parse_mount_spec(f"{path}:/config:r0")
+
+
+def test_mount_rejects_access_mode_as_option(tmp_path: Path) -> None:
+    path = tmp_path / "config"
+    path.write_text("x", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="access mode"):
+        parse_mount_spec(f"{path}:/config:ro,rw")
 
 
 def test_home_share_maps_host_home_relative_path_twice(tmp_path: Path) -> None:
@@ -62,6 +113,18 @@ def test_home_share_accepts_read_only_mode(tmp_path: Path) -> None:
 
     assert all(mount.read_only for mount in mounts)
     assert mounts[1].target == "/home/user/Downloads/Work"
+
+
+def test_home_share_preserves_mount_options(tmp_path: Path) -> None:
+    host_home = tmp_path / "home" / "fed"
+    source = host_home / "Dev"
+    source.mkdir(parents=True)
+
+    mounts = parse_home_share_spec(f"{source}:ro,Z", host_home=host_home)
+
+    assert all(mount.read_only for mount in mounts)
+    assert all(mount.options == ("Z",) for mount in mounts)
+    assert all(mount.mode == "ro,Z" for mount in mounts)
 
 
 def test_home_share_rejects_paths_outside_host_home(tmp_path: Path) -> None:

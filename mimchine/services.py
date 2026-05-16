@@ -78,6 +78,7 @@ class CreateOptions:
     resources: ResourceSpec = ResourceSpec()
     identity: IdentitySpec | None = None
     shell_state: bool | None = None
+    container_args: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -297,6 +298,7 @@ class MachineService:
             shell_state=ShellStateSpec(enabled=shell_state_enabled),
             ssh_agent=_bool_option(options.ssh_agent, profile, "ssh_agent", False),
             gpu=_bool_option(options.gpu, profile, "gpu", False),
+            container_args=_container_args(options, profile),
         )
         return MachineRecord.from_spec(spec, created_at=_now())
 
@@ -327,6 +329,8 @@ def _validate_runner_support(record: MachineRecord, runner: Runner) -> None:
             raise ValueError(f"runner [{runner.name}] does not support directory mounts")
         if mount.source.is_file() and not caps.file_mounts:
             raise ValueError(f"runner [{runner.name}] does not support file mounts")
+        if mount.options and not caps.mount_options:
+            raise ValueError(f"runner [{runner.name}] does not support mount options")
 
     if (
         record.image.kind is ImageSourceKind.OCI_REFERENCE
@@ -357,6 +361,8 @@ def _validate_runner_support(record: MachineRecord, runner: Runner) -> None:
         raise ValueError(f"runner [{runner.name}] does not support SSH agent forwarding")
     if record.gpu and not caps.gpu_vulkan:
         raise ValueError(f"runner [{runner.name}] does not support Vulkan GPU forwarding")
+    if record.container_args and record.runner not in {"podman", "docker"}:
+        raise ValueError(f"runner [{runner.name}] does not support container args")
 
 
 def _validate_image_source(record: MachineRecord) -> None:
@@ -425,6 +431,10 @@ def _ports(options: CreateOptions, profile: Profile | None) -> tuple[PortBind, .
 def _env(options: CreateOptions, profile: Profile | None) -> tuple[str, ...]:
     values = _tuple_profile_value(profile, "env") + options.env
     return tuple(parse_env(value) for value in values)
+
+
+def _container_args(options: CreateOptions, profile: Profile | None) -> tuple[str, ...]:
+    return _tuple_profile_value(profile, "container_args") + options.container_args
 
 
 def _exec_spec(spec: ExecSpec) -> ExecSpec:

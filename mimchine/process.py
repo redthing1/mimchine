@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Sequence
 
 
@@ -27,20 +28,23 @@ class ProcessRunner:
         capture: bool = False,
         foreground: bool = False,
         check: bool = True,
+        cwd: str | Path | None = None,
     ) -> ProcessResult:
         command = tuple(str(arg) for arg in args)
         if not command:
             raise ValueError("command cannot be empty")
+        cwd_text = None if cwd is None else str(cwd)
 
         try:
             if foreground:
-                returncode = subprocess.call(command)
+                returncode = subprocess.call(command, cwd=cwd_text)
                 result = ProcessResult(command, returncode)
             else:
                 completed = subprocess.run(
                     command,
                     check=False,
                     text=True,
+                    cwd=cwd_text,
                     stdout=subprocess.PIPE if capture else None,
                     stderr=subprocess.PIPE if capture else None,
                 )

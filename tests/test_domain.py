@@ -23,7 +23,7 @@ def test_machine_record_round_trips(tmp_path: Path) -> None:
         name="dev",
         image=ImageSource.oci_reference("fedora:latest"),
         runner="podman",
-        mounts=(MountSpec(tmp_path, "/work/project", kind="workspace"),),
+        mounts=(MountSpec(tmp_path, "/work/project", kind="workspace", options=("z",)),),
         ports=(PortBind(8080, 80),),
         env=("APP_ENV=dev",),
         network=NetworkSpec(NetworkMode.NONE),

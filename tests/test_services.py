@@ -41,6 +41,7 @@ CAPS = RunnerCapabilities(
     gpu_vulkan=True,
     root_identity=True,
     host_identity=True,
+    mount_options=True,
 )
 
 
@@ -96,6 +97,7 @@ def test_create_merges_profile_and_cli_into_record(tmp_path: Path) -> None:
                 "network": "none",
                 "identity": "host",
                 "shell": "bash -l",
+                "container_args": ["--device=vendor.example/gpu=all"],
             }
         },
     )
@@ -106,6 +108,7 @@ def test_create_merges_profile_and_cli_into_record(tmp_path: Path) -> None:
             profile="dev",
             env=("CLI=1",),
             ports=("8080:80",),
+            container_args=("--cap-drop=all",),
         )
     )
 
@@ -115,6 +118,10 @@ def test_create_merges_profile_and_cli_into_record(tmp_path: Path) -> None:
     assert record.network.mode is NetworkMode.NONE
     assert record.identity.mode is IdentityMode.HOST
     assert record.env == ("PROFILE=1", "CLI=1")
+    assert record.container_args == (
+        "--device=vendor.example/gpu=all",
+        "--cap-drop=all",
+    )
     assert [mount.kind for mount in record.mounts] == ["workspace", "shell_state"]
     assert record.shell == "bash -l"
 
@@ -421,6 +428,27 @@ def test_rejects_unsupported_host_network_before_port_interaction(tmp_path: Path
                 image="alpine",
                 network=NetworkMode.HOST,
                 ports=("18812:18812",),
+            )
+        )
+
+
+def test_rejects_mount_options_for_non_container_runner(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner = FakeRunner(name="smolvm", capabilities=replace(CAPS, mount_options=False))
+    service = MachineService(
+        AppConfig(defaults=Defaults(runner="smolvm"), profiles={}),
+        MachineStore(tmp_path / "machines"),
+        ShellStateManager(tmp_path / "shell-state"),
+        {"smolvm": runner},
+    )
+
+    with pytest.raises(ValueError, match="mount options"):
+        service.create(
+            CreateOptions(
+                name="dev",
+                image="alpine",
+                workspaces=(f"{workspace}:rw,z",),
             )
         )
 

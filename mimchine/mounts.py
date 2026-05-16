@@ -9,15 +9,22 @@ from .domain import MountSpec
 
 DEFAULT_WORKSPACE_BASE = "/work"
 DEFAULT_GUEST_HOME = "/home/user"
+_NO_TARGET_OPTION_PREFIXES = {"ro", "rw", "z", "Z", "U", "O"}
 
 
 def parse_mount_spec(value: str) -> MountSpec:
-    source, target, mode = _parse_parts(value, require_target=True)
-    return MountSpec(source=source, target=target, read_only=mode == "ro", kind="mount")
+    source, target, read_only, options = _parse_parts(value, require_target=True)
+    return MountSpec(
+        source=source,
+        target=target,
+        read_only=read_only,
+        kind="mount",
+        options=options,
+    )
 
 
 def parse_workspace_spec(value: str) -> MountSpec:
-    source, target, mode = _parse_parts(value, require_target=False)
+    source, target, read_only, options = _parse_parts(value, require_target=False)
     if not source.is_dir():
         raise ValueError(f"workspace path is not a directory: {source}")
     if target is None:
@@ -25,8 +32,9 @@ def parse_workspace_spec(value: str) -> MountSpec:
     return MountSpec(
         source=source,
         target=target,
-        read_only=mode == "ro",
+        read_only=read_only,
         kind="workspace",
+        options=options,
     )
 
 
@@ -36,7 +44,7 @@ def parse_home_share_spec(
     host_home: Path | None = None,
     guest_home: str = DEFAULT_GUEST_HOME,
 ) -> tuple[MountSpec, ...]:
-    source, mode = _parse_home_share_parts(value)
+    source, read_only, options = _parse_home_share_parts(value)
     if not source.is_dir():
         raise ValueError(f"home-share path is not a directory: {source}")
 
@@ -55,14 +63,13 @@ def parse_home_share_spec(
         if rel == "."
         else posixpath.join(guest_home, rel.replace(os.sep, "/"))
     )
-    read_only = mode == "ro"
-
     mounts = [
         MountSpec(
             source=source,
             target=str(source),
             read_only=read_only,
             kind="home_share",
+            options=options,
         )
     ]
     if guest_target != str(source):
@@ -72,6 +79,7 @@ def parse_home_share_spec(
                 target=guest_target,
                 read_only=read_only,
                 kind="home_share",
+                options=options,
             )
         )
     return tuple(mounts)
@@ -100,7 +108,9 @@ def map_host_path_to_guest(host_path: Path, mounts: tuple[MountSpec, ...]) -> st
     return posixpath.join(best.target, rel.replace(os.sep, "/"))
 
 
-def _parse_parts(value: str, *, require_target: bool) -> tuple[Path, str | None, str]:
+def _parse_parts(
+    value: str, *, require_target: bool
+) -> tuple[Path, str | None, bool, tuple[str, ...]]:
     parts = [part.strip() for part in value.strip().split(":")]
     if len(parts) == 0 or any(part == "" for part in parts):
         raise ValueError(f"invalid mount spec: {value}")
@@ -114,24 +124,25 @@ def _parse_parts(value: str, *, require_target: bool) -> tuple[Path, str | None,
         raise ValueError(f"mount source must be a directory or regular file: {source}")
 
     target: str | None = None
-    mode = "rw"
+    read_only = False
+    options: tuple[str, ...] = ()
 
     if len(parts) == 2:
-        if parts[1] in {"ro", "rw"} and not require_target:
-            mode = parts[1]
+        if _looks_like_mode_options(parts[1]) and not require_target:
+            read_only, options = _validate_mode_options(parts[1])
         else:
             target = _validate_target(parts[1])
     elif len(parts) == 3:
         target = _validate_target(parts[1])
-        mode = _validate_mode(parts[2])
+        read_only, options = _validate_mode_options(parts[2])
 
     if require_target and target is None:
         raise ValueError(f"mount target is required: {value}")
 
-    return source, target, mode
+    return source, target, read_only, options
 
 
-def _parse_home_share_parts(value: str) -> tuple[Path, str]:
+def _parse_home_share_parts(value: str) -> tuple[Path, bool, tuple[str, ...]]:
     parts = [part.strip() for part in value.strip().split(":")]
     if len(parts) == 0 or any(part == "" for part in parts):
         raise ValueError(f"invalid home-share spec: {value}")
@@ -141,10 +152,15 @@ def _parse_home_share_parts(value: str) -> tuple[Path, str]:
     source = Path(os.path.expanduser(parts[0])).resolve()
     if not source.exists():
         raise ValueError(f"home-share source does not exist: {source}")
-    mode = "rw"
+    read_only = False
+    options: tuple[str, ...] = ()
     if len(parts) == 2:
-        mode = _validate_mode(parts[1])
-    return source, mode
+        if not _looks_like_mode_options(parts[1]):
+            raise ValueError(
+                f"mount mode must be ro or rw, optionally followed by options: {parts[1]}"
+            )
+        read_only, options = _validate_mode_options(parts[1])
+    return source, read_only, options
 
 
 def _validate_target(value: str) -> str:
@@ -153,10 +169,32 @@ def _validate_target(value: str) -> str:
     return value
 
 
-def _validate_mode(value: str) -> str:
-    if value not in {"ro", "rw"}:
-        raise ValueError(f"mount mode must be ro or rw: {value}")
-    return value
+def _looks_like_mode_options(value: str) -> bool:
+    first = value.split(",", 1)[0]
+    return first in _NO_TARGET_OPTION_PREFIXES
+
+
+def _validate_mode_options(value: str) -> tuple[bool, tuple[str, ...]]:
+    parts = [part.strip() for part in value.split(",")]
+    if any(part == "" for part in parts):
+        raise ValueError(f"invalid mount option list: {value}")
+
+    read_only = False
+    options = parts
+    if parts[0] in {"ro", "rw"}:
+        read_only = parts[0] == "ro"
+        options = parts[1:]
+    elif not _looks_like_mode_options(value):
+        raise ValueError(
+            f"mount mode must be ro or rw, optionally followed by options: {value}"
+        )
+
+    for option in options:
+        if option in {"ro", "rw"}:
+            raise ValueError(f"mount access mode must appear first: {value}")
+        if ":" in option or "," in option:
+            raise ValueError(f"invalid mount option: {option}")
+    return read_only, tuple(options)
 
 
 def _default_workspace_target(source: Path) -> str:
