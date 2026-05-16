@@ -23,6 +23,7 @@ from mimchine.domain import (
 )
 from mimchine.process import ProcessResult
 from mimchine.runners import DockerRunner, PodmanRunner, SmolvmRunner
+from mimchine.runners.containers import KEEPALIVE_COMMAND, STARTUP_HOOK
 
 
 class RecordingProcessRunner:
@@ -109,8 +110,9 @@ def test_podman_runner_create_uses_record_as_command_source(tmp_path: Path) -> N
         "fedora:latest",
         "sh",
         "-lc",
-        "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done",
+        KEEPALIVE_COMMAND,
     )
+    assert STARTUP_HOOK in KEEPALIVE_COMMAND
 
 
 def test_podman_runner_create_maps_image_identity_to_keep_id(tmp_path: Path) -> None:

@@ -337,12 +337,14 @@ def _validate_runner_support(record: MachineRecord, runner: Runner) -> None:
             f"runner [{runner.name}] needs networking to start OCI references; "
             "enable networking or use a .smolmachine artifact"
         )
-    if record.ports and not caps.published_ports:
-        raise ValueError(f"runner [{runner.name}] does not support port publishing")
-    if record.network.mode is NetworkMode.DEFAULT and not caps.outbound_network:
-        raise ValueError(f"runner [{runner.name}] does not support outbound networking")
     if record.network.mode is NetworkMode.HOST and not caps.host_network:
         raise ValueError(f"runner [{runner.name}] does not support host networking")
+    if record.ports and not caps.published_ports:
+        raise ValueError(f"runner [{runner.name}] does not support port publishing")
+    if record.ports and record.network.mode is NetworkMode.HOST:
+        raise ValueError("port publishing cannot be used with host networking")
+    if record.network.mode is NetworkMode.DEFAULT and not caps.outbound_network:
+        raise ValueError(f"runner [{runner.name}] does not support outbound networking")
     if (
         record.network.allow_hosts or record.network.allow_cidrs
     ) and not caps.restricted_network:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
@@ -384,6 +384,43 @@ def test_rejects_runner_unsupported_file_mount(tmp_path: Path) -> None:
                 name="dev",
                 image="alpine",
                 mounts=(f"{file_path}:/config:ro",),
+            )
+        )
+
+
+def test_rejects_port_publishing_with_host_network(tmp_path: Path) -> None:
+    service = _service(tmp_path, FakeRunner())
+
+    with pytest.raises(ValueError, match="host networking"):
+        service.create(
+            CreateOptions(
+                name="dev",
+                image="alpine",
+                network=NetworkMode.HOST,
+                ports=("18812:18812",),
+            )
+        )
+
+
+def test_rejects_unsupported_host_network_before_port_interaction(tmp_path: Path) -> None:
+    runner = FakeRunner(name="smolvm", capabilities=replace(CAPS, host_network=False))
+    service = MachineService(
+        AppConfig(defaults=Defaults(runner="smolvm"), profiles={}),
+        MachineStore(tmp_path / "machines"),
+        ShellStateManager(tmp_path / "shell-state"),
+        {"smolvm": runner},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="runner \\[smolvm\\] does not support host networking",
+    ):
+        service.create(
+            CreateOptions(
+                name="dev",
+                image="alpine",
+                network=NetworkMode.HOST,
+                ports=("18812:18812",),
             )
         )
 
