@@ -5,10 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from platformdirs import user_config_dir
-
 from .domain import NetworkMode, ResourceSpec
 from .log import logger
+from .paths import config_dir
 from .shells import normalize_shell
 
 
@@ -51,9 +50,7 @@ shell = "auto"
 
 
 def get_config_dir() -> Path:
-    path = Path(user_config_dir("mimchine"))
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return config_dir()
 
 
 def get_config_path() -> Path:

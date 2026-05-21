@@ -6,6 +6,7 @@ from typing import Optional
 import typer
 
 from . import __VERSION__
+from .constants import APP_NAME
 from .domain import ExecSpec, IdentityMode, IdentitySpec, NetworkMode, ResourceSpec
 from .log import configure_logging, logger
 from .output import (
@@ -19,7 +20,6 @@ from .services import BuildOptions, BuildService, CreateOptions, MachineService
 from .state import MachineNotFoundError
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-APP_NAME = "mimchine"
 
 app = typer.Typer(
     name="mim",

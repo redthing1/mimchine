@@ -8,7 +8,6 @@ authors = [
     { name = "redthing1", email = "redthing1@alt.icu" },
 ]
 dependencies = [
-    "platformdirs==4.9.2",
     "rich==13.9.4",
     "typer==0.15.4",
 ]

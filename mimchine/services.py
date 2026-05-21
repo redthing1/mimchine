@@ -5,9 +5,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
 
-from platformdirs import user_cache_dir
-from platformdirs import user_data_dir
-
 from .builders import Builder, get_builder
 from .config import AppConfig, Defaults, load_config, validate_builder, validate_runner
 from .domain import (
@@ -36,15 +33,13 @@ from .mounts import (
     parse_workspace_spec,
 )
 from .parsing import parse_env, parse_network_mode, parse_port_bind
+from .paths import cache_dir, data_dir
 from .profiles import Profile, load_profile
 from .runners import Runner, get_runner
 from .shells import enter_shell_command, is_auto_shell, normalize_shell
 from .shell_state import ShellStateManager
 from .smolvm_images import PruneResult, SmolvmImageImporter
 from .state import MachineStore
-
-
-APP_NAME = "mimchine"
 
 
 @dataclass(frozen=True)
@@ -304,15 +299,11 @@ class MachineService:
 
 
 def get_data_dir() -> Path:
-    path = Path(user_data_dir(APP_NAME))
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return data_dir()
 
 
 def get_cache_dir() -> Path:
-    path = Path(user_cache_dir(APP_NAME))
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return cache_dir()
 
 
 def _validate_runner_support(record: MachineRecord, runner: Runner) -> None:
