@@ -23,6 +23,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["mimchine"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"mimchine/enter_shell.sh" = "mimchine/enter_shell.sh"
+
 [dependency-groups]
 build = [
     "hatchling==1.24.2",

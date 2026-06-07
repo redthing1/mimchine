@@ -36,7 +36,7 @@ from .parsing import parse_env, parse_network_mode, parse_port_bind
 from .paths import cache_dir, data_dir
 from .profiles import Profile, load_profile
 from .runners import Runner, get_runner
-from .shells import enter_shell_command, is_auto_shell, normalize_shell
+from .shells import enter_shell_command, normalize_shell
 from .shell_state import ShellStateManager
 from .smolvm_images import PruneResult, SmolvmImageImporter
 from .state import MachineStore
@@ -190,12 +190,11 @@ class MachineService:
 
         selected_shell = shell or record.shell or self.config.defaults.shell
         shell_command = enter_shell_command(selected_shell)
-        shell_env = (
-            ()
-            if is_auto_shell(selected_shell) or not record.shell_state.enabled
-            else self.shell_state.env_for_shell(shell_command)
+        exec_env = (
+            f"MIM_MACHINE={record.name}",
+            f"MIM_RUNNER={record.runner}",
+            f"MIM_SHELL_STATE={int(record.shell_state.enabled)}",
         )
-        exec_env = (f"MIM_MACHINE={record.name}", f"MIM_RUNNER={record.runner}", *shell_env)
         workdir = _mapped_cwd(record.mounts) or record.workdir
         runner.exec(
             record,

@@ -272,7 +272,11 @@ def test_enter_starts_machine_and_execs_shell_from_mapped_cwd(
     assert spec.interactive is True
     assert spec.tty is True
     assert spec.workdir == "/work/workspace"
-    assert spec.env == ("MIM_MACHINE=dev", "MIM_RUNNER=podman")
+    assert spec.env == (
+        "MIM_MACHINE=dev",
+        "MIM_RUNNER=podman",
+        "MIM_SHELL_STATE=1",
+    )
 
 
 def test_enter_uses_explicit_shell_from_record(tmp_path: Path) -> None:
@@ -282,11 +286,11 @@ def test_enter_uses_explicit_shell_from_record(tmp_path: Path) -> None:
 
     service.enter("dev")
 
-    assert runner.execs[0][1].command == ("zsh", "-l")
+    assert runner.execs[0][1].command[-2:] == ("zsh", "-l")
     assert runner.execs[0][1].env == (
         "MIM_MACHINE=dev",
         "MIM_RUNNER=podman",
-        "HISTFILE=/mim/shell-state/.zsh_history",
+        "MIM_SHELL_STATE=1",
     )
 
 
@@ -307,8 +311,12 @@ def test_enter_does_not_set_shell_state_env_when_disabled(tmp_path: Path) -> Non
 
     service.enter("dev")
 
-    assert runner.execs[0][1].command == ("zsh", "-l")
-    assert runner.execs[0][1].env == ("MIM_MACHINE=dev", "MIM_RUNNER=podman")
+    assert runner.execs[0][1].command[-2:] == ("zsh", "-l")
+    assert runner.execs[0][1].env == (
+        "MIM_MACHINE=dev",
+        "MIM_RUNNER=podman",
+        "MIM_SHELL_STATE=0",
+    )
 
 
 def test_enter_shell_flag_overrides_record_shell(tmp_path: Path) -> None:
@@ -319,7 +327,11 @@ def test_enter_shell_flag_overrides_record_shell(tmp_path: Path) -> None:
     service.enter("dev", "auto")
 
     assert runner.execs[0][1].command == AUTO_ENTER_SHELL_COMMAND
-    assert runner.execs[0][1].env == ("MIM_MACHINE=dev", "MIM_RUNNER=podman")
+    assert runner.execs[0][1].env == (
+        "MIM_MACHINE=dev",
+        "MIM_RUNNER=podman",
+        "MIM_SHELL_STATE=1",
+    )
 
 
 def test_enter_uses_config_default_shell(tmp_path: Path) -> None:
@@ -335,11 +347,11 @@ def test_enter_uses_config_default_shell(tmp_path: Path) -> None:
     service.enter("dev")
 
     assert record.shell is None
-    assert runner.execs[0][1].command == ("bash", "-l")
+    assert runner.execs[0][1].command[-2:] == ("bash", "-l")
     assert runner.execs[0][1].env == (
         "MIM_MACHINE=dev",
         "MIM_RUNNER=podman",
-        "HISTFILE=/mim/shell-state/.bash_history",
+        "MIM_SHELL_STATE=1",
     )
 
 
@@ -632,6 +644,21 @@ def test_prune_delegates_to_smolvm_images(tmp_path: Path) -> None:
         dry_run=True,
     )
     assert images.pruned == [True]
+
+
+def test_delete_can_preserve_shell_state(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    service = _service(tmp_path, runner)
+    record = service.create(CreateOptions(name="dev", image="alpine"))
+    shell_state_path = tmp_path / "shell-state" / "dev"
+    history = shell_state_path / ".zsh_history"
+    history.write_text("kept\n", encoding="utf-8")
+
+    service.delete("dev", keep_shell_state=True)
+
+    assert runner.deleted == [record]
+    assert not service.store.exists("dev")
+    assert history.read_text(encoding="utf-8") == "kept\n"
 
 
 def test_create_cleans_backend_and_shell_state_when_save_fails(tmp_path: Path) -> None:

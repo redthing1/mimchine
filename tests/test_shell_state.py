@@ -16,18 +16,6 @@ def test_shell_state_mount_uses_machine_directory(tmp_path: Path) -> None:
     assert not mount.source.exists()
 
 
-def test_shell_state_sets_known_shell_history_files(tmp_path: Path) -> None:
-    manager = ShellStateManager(tmp_path)
-
-    assert manager.env_for_shell(("zsh", "-l")) == (
-        "HISTFILE=/mim/shell-state/.zsh_history",
-    )
-    assert manager.env_for_shell(("/bin/bash", "-l")) == (
-        "HISTFILE=/mim/shell-state/.bash_history",
-    )
-    assert manager.env_for_shell(("fish",)) == ()
-
-
 def test_shell_state_delete_removes_state(tmp_path: Path) -> None:
     manager = ShellStateManager(tmp_path)
     state_dir = manager.ensure("dev")

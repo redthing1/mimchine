@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import posixpath
 import shutil
 from pathlib import Path
 
@@ -30,21 +28,6 @@ class ShellStateManager:
             read_only=False,
             kind="shell_state",
         )
-
-    def env_for_shell(self, shell_command: tuple[str, ...]) -> tuple[str, ...]:
-        if len(shell_command) == 0:
-            return ()
-
-        shell_name = os.path.basename(shell_command[0])
-        history_files = {
-            "zsh": ".zsh_history",
-            "bash": ".bash_history",
-        }
-        history_file = history_files.get(shell_name)
-        if history_file is None:
-            return ()
-
-        return (f"HISTFILE={posixpath.join(SHELL_STATE_GUEST_DIR, history_file)}",)
 
     def delete(self, machine_name: str) -> None:
         shutil.rmtree(self.path_for(machine_name), ignore_errors=True)
