@@ -58,6 +58,7 @@ class BuildSpec:
     builder: str
     platform: str | None = None
     build_args: tuple[str, ...] = ()
+    no_cache: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "image", _require_text(self.image, "image"))

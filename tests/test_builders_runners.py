@@ -55,6 +55,7 @@ def test_podman_build_command(tmp_path: Path) -> None:
             builder="podman",
             platform="linux/amd64",
             build_args=("A=B",),
+            no_cache=True,
         )
     )
 
@@ -66,6 +67,7 @@ def test_podman_build_command(tmp_path: Path) -> None:
             str(dockerfile.resolve()),
             "-t",
             "example:dev",
+            "--no-cache",
             "--platform",
             "linux/amd64",
             "--build-arg",

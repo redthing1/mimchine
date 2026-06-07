@@ -87,6 +87,9 @@ def build(
         "--build-arg",
         help="Build-time variable, KEY=VALUE. May be repeated.",
     ),
+    no_cache: bool = typer.Option(
+        False, "--no-cache", help="Do not use build cache."
+    ),
 ) -> None:
     _run(
         lambda: BuildService.default().build(
@@ -97,6 +100,7 @@ def build(
                 builder=builder,
                 platform=platform,
                 build_args=tuple(build_args),
+                no_cache=no_cache,
             )
         )
     )

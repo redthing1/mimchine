@@ -50,6 +50,7 @@ class BuildOptions:
     builder: str | None = None
     platform: str | None = None
     build_args: tuple[str, ...] = ()
+    no_cache: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,6 +102,7 @@ class BuildService:
             builder=builder_name,
             platform=options.platform,
             build_args=options.build_args,
+            no_cache=options.no_cache,
         )
         builder.build(spec)
 

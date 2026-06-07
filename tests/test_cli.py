@@ -23,15 +23,14 @@ def test_build_cli_passes_canonical_options(monkeypatch, tmp_path: Path) -> None
         staticmethod(lambda: FakeBuildService()),
     )
 
-    result = CliRunner().invoke(
-        cli.app,
-        ["build", "example:dev", "-f", str(dockerfile), "-C", str(tmp_path)],
-    )
+    args = ["build", "example:dev", "-f", str(dockerfile), "-C", str(tmp_path)]
+    result = CliRunner().invoke(cli.app, [*args, "--no-cache"])
 
     assert result.exit_code == 0
     assert captured["options"].image == "example:dev"
     assert captured["options"].file == dockerfile
     assert captured["options"].context == tmp_path
+    assert captured["options"].no_cache is True
 
 
 def test_create_cli_passes_machine_intent(monkeypatch, tmp_path: Path) -> None:

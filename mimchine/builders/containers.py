@@ -20,6 +20,8 @@ class _ContainerBuilder:
             "-t",
             spec.image,
         ]
+        if spec.no_cache:
+            args.append("--no-cache")
         if spec.platform:
             args.extend(["--platform", spec.platform])
         for build_arg in spec.build_args:
