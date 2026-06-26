@@ -38,7 +38,7 @@ from .profiles import Profile, load_profile
 from .runners import Runner, get_runner
 from .shells import enter_shell_command, normalize_shell
 from .shell_state import ShellStateManager
-from .smolvm_images import PruneResult, SmolvmImageImporter
+from .smolvm_images import MaterializeResult, PruneResult, SmolvmImageImporter
 from .state import MachineStore
 
 
@@ -250,10 +250,18 @@ class MachineService:
             or self.smolvm_images is None
         ):
             return record
-        self.smolvm_images.materialize(
+        result = self.smolvm_images.materialize(
             record.image,
             builder=self.config.defaults.builder,
         )
+        if result is MaterializeResult.NOT_LOCAL and record.network.mode is NetworkMode.NONE:
+            raise ValueError(
+                f"runner [smolvm] cannot create offline OCI machine from "
+                f"[{record.image.value}]: image is not present locally and is not "
+                "imported into smolvm; build or pull it with the configured builder, "
+                "import it with smolvm image import, enable networking, or use a "
+                ".smolmachine artifact"
+            )
         return record
 
     def _record_from_options(

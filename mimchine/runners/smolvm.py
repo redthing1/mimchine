@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from shutil import get_terminal_size
 
+from .lifecycle import KEEPALIVE_COMMAND
 from ..domain import (
     ExecSpec,
     ImageSourceKind,
@@ -38,7 +40,7 @@ class SmolvmRunner:
         self.runner = runner
 
     def create(self, record: MachineRecord) -> None:
-        args = ["smolvm", "machine", "create", record.backend_id]
+        args = ["smolvm", "machine", "create", "--name", record.backend_id]
         if record.image.kind is ImageSourceKind.SMOLMACHINE:
             args.extend(["--from", record.image.value])
         elif record.image.kind is ImageSourceKind.OCI_REFERENCE:
@@ -61,6 +63,7 @@ class SmolvmRunner:
         if record.gpu:
             args.append("--gpu")
 
+        args.extend(["--", "sh", "-lc", KEEPALIVE_COMMAND])
         self.runner.run(args, foreground=True)
 
     def start(self, record: MachineRecord) -> None:
@@ -77,7 +80,7 @@ class SmolvmRunner:
 
     def delete(self, record: MachineRecord) -> None:
         self.runner.run(
-            ["smolvm", "machine", "delete", record.backend_id, "-f"],
+            ["smolvm", "machine", "delete", "--name", record.backend_id, "-f"],
             foreground=True,
             check=False,
         )
@@ -106,7 +109,7 @@ class SmolvmRunner:
 
     def inspect(self, record: MachineRecord) -> RuntimeStatus:
         result = self.runner.run(
-            ["smolvm", "machine", "status", "--name", record.backend_id],
+            ["smolvm", "machine", "status", "--name", record.backend_id, "--json"],
             capture=True,
             check=False,
         )
@@ -119,10 +122,10 @@ class SmolvmRunner:
                 result.stderr.strip(),
         )
 
-        text = result.stdout.lower()
-        if "not running" in text or "stopped" in text:
+        state_value = _json_status_state(result.stdout)
+        if state_value in {"created", "stopped"}:
             state = RuntimeState.STOPPED
-        elif "running" in text:
+        elif state_value == "running":
             state = RuntimeState.RUNNING
         else:
             state = RuntimeState.UNKNOWN
@@ -150,6 +153,19 @@ def _network_args(record: MachineRecord) -> list[str]:
     for host in record.network.allow_hosts:
         args.extend(["--allow-host", host])
     return args
+
+
+def _json_status_state(stdout: str) -> str | None:
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    state = data.get("state")
+    if not isinstance(state, str):
+        return None
+    return state.lower()
 
 
 def _resource_args(record: MachineRecord) -> list[str]:

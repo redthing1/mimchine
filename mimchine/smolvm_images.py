@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 from .domain import ImageSource
@@ -15,6 +16,12 @@ class LocalImage:
     image_id: str
     os: str
     architecture: str
+
+
+class MaterializeResult(Enum):
+    IMPORTED = "imported"
+    ALREADY_IMPORTED = "already_imported"
+    NOT_LOCAL = "not_local"
 
 
 @dataclass(frozen=True)
@@ -31,17 +38,20 @@ class SmolvmImageImporter:
         self.staging_root = staging_root
         self.runner = runner or ProcessRunner()
 
-    def materialize(self, image: ImageSource, *, builder: str) -> None:
+    def materialize(self, image: ImageSource, *, builder: str) -> MaterializeResult:
+        imported = self._imported_reference(image.value)
         local = self._inspect_local_image(builder, image.value)
         if local is None:
-            return
+            if imported is not None:
+                return MaterializeResult.ALREADY_IMPORTED
+            return MaterializeResult.NOT_LOCAL
         if builder != "podman":
             raise ValueError(
                 "local smolvm image imports currently support podman; "
                 "use a registry image or pass a .smolmachine artifact"
             )
-        if self._already_imported(local):
-            return
+        if _matches_local_image(imported, local):
+            return MaterializeResult.ALREADY_IMPORTED
 
         self.staging_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
@@ -50,7 +60,7 @@ class SmolvmImageImporter:
             archive = Path(staging) / "image.oci.tar"
             self.runner.run(
                 [
-                    "podman",
+                    builder,
                     "save",
                     "--format",
                     "oci-archive",
@@ -75,6 +85,7 @@ class SmolvmImageImporter:
                 ],
                 foreground=True,
             )
+        return MaterializeResult.IMPORTED
 
     def prune(self, *, dry_run: bool) -> PruneResult:
         result = self.runner.run(
@@ -100,35 +111,27 @@ class SmolvmImageImporter:
             dry_run=bool(data.get("dry_run", dry_run)),
         )
 
-    def _already_imported(self, image: LocalImage) -> bool:
+    def _imported_reference(self, reference: str) -> dict[str, object] | None:
         result = self.runner.run(
             ["smolvm", "image", "ls", "--json"],
             capture=True,
             check=False,
         )
         if result.returncode != 0:
-            return False
+            return None
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
-            return False
+            return None
         images = data.get("images", [])
         if not isinstance(images, list):
-            return False
-        platform = f"{image.os}/{image.architecture}"
+            return None
         for imported in images:
             if not isinstance(imported, dict):
                 continue
-            imported_platform = (
-                f"{imported.get('os', '')}/{imported.get('architecture', '')}"
-            )
-            if (
-                imported.get("reference") == image.reference
-                and imported.get("source_id") == image.image_id
-                and imported_platform == platform
-            ):
-                return True
-        return False
+            if imported.get("reference") == reference:
+                return imported
+        return None
 
     def _inspect_local_image(self, builder: str, image: str) -> LocalImage | None:
         result = self.runner.run(
@@ -163,6 +166,17 @@ def _required_text(data: dict[str, object], *keys: str) -> str:
         if isinstance(value, str) and value:
             return value
     raise ValueError(f"image inspect output is missing [{keys[0]}]")
+
+
+def _matches_local_image(imported: dict[str, object] | None, image: LocalImage) -> bool:
+    if imported is None:
+        return False
+    imported_platform = f"{imported.get('os', '')}/{imported.get('architecture', '')}"
+    return (
+        imported.get("reference") == image.reference
+        and imported.get("source_id") == image.image_id
+        and imported_platform == f"{image.os}/{image.architecture}"
+    )
 
 
 def _int(data: dict[str, object], key: str) -> int:

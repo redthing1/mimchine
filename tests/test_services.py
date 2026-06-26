@@ -21,7 +21,7 @@ from mimchine.domain import (
 from mimchine.services import CreateOptions, MachineService
 from mimchine.shells import AUTO_ENTER_SHELL_COMMAND
 from mimchine.shell_state import ShellStateManager
-from mimchine.smolvm_images import PruneResult
+from mimchine.smolvm_images import MaterializeResult, PruneResult
 from mimchine.state import MachineStore
 
 
@@ -578,15 +578,41 @@ def test_imported_smolvm_image_can_be_created_without_network(tmp_path: Path) ->
     record = service.create(
         CreateOptions(
             name="dev",
-            image="mim_codex",
+            image="example-dev:latest",
             network=NetworkMode.NONE,
         )
     )
 
-    assert images.materialized == [("mim_codex", "podman")]
+    assert images.materialized == [("example-dev:latest", "podman")]
     assert record.image.kind is ImageSourceKind.OCI_REFERENCE
-    assert record.image.value == "mim_codex"
+    assert record.image.value == "example-dev:latest"
     assert runner.created == [record]
+
+
+def test_rejects_smolvm_offline_oci_reference_when_image_is_not_local(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner(name="smolvm", capabilities=replace(CAPS, host_network=False))
+    images = FakeSmolvmImages(MaterializeResult.NOT_LOCAL)
+    service = MachineService(
+        AppConfig(defaults=Defaults(builder="podman", runner="smolvm"), profiles={}),
+        MachineStore(tmp_path / "machines"),
+        ShellStateManager(tmp_path / "shell-state"),
+        {"smolvm": runner},
+        smolvm_images=images,
+    )
+
+    with pytest.raises(ValueError, match="cannot create offline OCI machine"):
+        service.create(
+            CreateOptions(
+                name="dev",
+                image="ghcr.io/org/app:latest",
+                network=NetworkMode.NONE,
+            )
+        )
+
+    assert images.materialized == [("ghcr.io/org/app:latest", "podman")]
+    assert runner.created == []
 
 
 def test_rejects_runner_unsupported_root_identity(tmp_path: Path) -> None:
@@ -752,12 +778,14 @@ class FailingStore(MachineStore):
 
 
 class FakeSmolvmImages:
-    def __init__(self):
+    def __init__(self, result: MaterializeResult = MaterializeResult.IMPORTED):
+        self.result = result
         self.materialized: list[tuple[str, str]] = []
         self.pruned: list[bool] = []
 
-    def materialize(self, image: ImageSource, *, builder: str) -> None:
+    def materialize(self, image: ImageSource, *, builder: str) -> MaterializeResult:
         self.materialized.append((image.value, builder))
+        return self.result
 
     def prune(self, *, dry_run: bool) -> PruneResult:
         self.pruned.append(dry_run)

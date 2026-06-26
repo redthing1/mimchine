@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from os import terminal_size
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from mimchine.domain import (
 )
 from mimchine.process import ProcessResult
 from mimchine.runners import DockerRunner, PodmanRunner, SmolvmRunner
-from mimchine.runners.containers import KEEPALIVE_COMMAND, STARTUP_HOOK
+from mimchine.runners.lifecycle import KEEPALIVE_COMMAND, STARTUP_HOOK
 
 
 class RecordingProcessRunner:
@@ -285,12 +286,32 @@ def test_smolvm_runner_create_maps_machine_flags(tmp_path: Path) -> None:
     SmolvmRunner(runner).create(record)
 
     command = runner.calls[0]
-    assert command[:5] == ("smolvm", "machine", "create", "vm", "--from")
+    assert command[:6] == ("smolvm", "machine", "create", "--name", "vm", "--from")
     assert "--net" in command
     assert "--allow-cidr" in command
     assert "-v" in command
     assert "--ssh-agent" in command
     assert "--gpu" in command
+    assert command[-4:] == ("--", "sh", "-lc", KEEPALIVE_COMMAND)
+
+
+def test_smolvm_runner_delete_uses_named_machine_flag() -> None:
+    runner = RecordingProcessRunner()
+    record = MachineRecord.from_spec(
+        MachineSpec("vm", ImageSource.oci_reference("alpine"), "smolvm"),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    SmolvmRunner(runner).delete(record)
+
+    assert runner.calls[0] == (
+        "smolvm",
+        "machine",
+        "delete",
+        "--name",
+        "vm",
+        "-f",
+    )
 
 
 def test_smolvm_runner_create_keeps_shell_state_mount_plain(tmp_path: Path) -> None:
@@ -313,8 +334,31 @@ def test_smolvm_runner_create_keeps_shell_state_mount_plain(tmp_path: Path) -> N
     assert f"{tmp_path.resolve()}:/mim/shell-state:rw,Z" not in command
 
 
-def test_smolvm_runner_status_parses_not_running_before_running() -> None:
-    runner = RecordingProcessRunner(stdout="Machine 'vm': not running\n")
+def test_smolvm_runner_status_uses_json_output() -> None:
+    runner = RecordingProcessRunner(stdout=json.dumps({"state": "running"}))
+    record = MachineRecord.from_spec(
+        MachineSpec("vm", ImageSource.oci_reference("alpine"), "smolvm"),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    status = SmolvmRunner(runner).inspect(record)
+
+    assert runner.calls[0] == (
+        "smolvm",
+        "machine",
+        "status",
+        "--name",
+        "vm",
+        "--json",
+    )
+    assert status.state is RuntimeState.RUNNING
+
+
+@pytest.mark.parametrize("state", ["created", "stopped"])
+def test_smolvm_runner_status_treats_created_and_stopped_as_startable(
+    state: str,
+) -> None:
+    runner = RecordingProcessRunner(stdout=json.dumps({"state": state}))
     record = MachineRecord.from_spec(
         MachineSpec("vm", ImageSource.oci_reference("alpine"), "smolvm"),
         created_at="2026-01-01T00:00:00+00:00",
@@ -323,6 +367,18 @@ def test_smolvm_runner_status_parses_not_running_before_running() -> None:
     status = SmolvmRunner(runner).inspect(record)
 
     assert status.state is RuntimeState.STOPPED
+
+
+def test_smolvm_runner_status_treats_malformed_json_as_unknown() -> None:
+    runner = RecordingProcessRunner(stdout="Machine 'vm': running\n")
+    record = MachineRecord.from_spec(
+        MachineSpec("vm", ImageSource.oci_reference("alpine"), "smolvm"),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    status = SmolvmRunner(runner).inspect(record)
+
+    assert status.state is RuntimeState.UNKNOWN
 
 
 def test_smolvm_runner_exec_sets_guest_tty_size(

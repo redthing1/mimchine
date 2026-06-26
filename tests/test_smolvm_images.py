@@ -5,7 +5,7 @@ from pathlib import Path
 
 from mimchine.domain import ImageSource
 from mimchine.process import ProcessResult
-from mimchine.smolvm_images import SmolvmImageImporter
+from mimchine.smolvm_images import MaterializeResult, SmolvmImageImporter
 
 
 class RecordingRunner:
@@ -34,7 +34,7 @@ class RecordingRunner:
             images = (
                 [
                     {
-                        "reference": "mim_codex",
+                        "reference": "example-dev:latest",
                         "source_id": "sha256:abc",
                         "os": "linux",
                         "architecture": "amd64",
@@ -70,13 +70,16 @@ def test_imports_local_podman_image_into_smolvm(tmp_path: Path) -> None:
     runner = RecordingRunner()
     importer = SmolvmImageImporter(tmp_path, runner=runner)
 
-    importer.materialize(ImageSource.oci_reference("mim_codex"), builder="podman")
+    result = importer.materialize(
+        ImageSource.oci_reference("example-dev:latest"), builder="podman"
+    )
 
+    assert result is MaterializeResult.IMPORTED
     assert ("podman", "save") == runner.calls[2][:2]
     import_call = runner.calls[3]
     assert import_call[:3] == ("smolvm", "image", "import")
     assert "--oci-archive" in import_call
-    assert ("--tag", "mim_codex") == (
+    assert ("--tag", "example-dev:latest") == (
         import_call[import_call.index("--tag")],
         import_call[import_call.index("--tag") + 1],
     )
@@ -90,10 +93,54 @@ def test_skips_import_when_smolvm_has_current_local_image(tmp_path: Path) -> Non
     runner = RecordingRunner(imported=True)
     importer = SmolvmImageImporter(tmp_path, runner=runner)
 
-    importer.materialize(ImageSource.oci_reference("mim_codex"), builder="podman")
+    result = importer.materialize(
+        ImageSource.oci_reference("example-dev:latest"), builder="podman"
+    )
 
+    assert result is MaterializeResult.ALREADY_IMPORTED
     assert ("podman", "save") not in [call[:2] for call in runner.calls]
     assert ("smolvm", "image", "import") not in [call[:3] for call in runner.calls]
+
+
+def test_imports_when_smolvm_image_list_is_malformed(tmp_path: Path) -> None:
+    class MalformedListRunner(RecordingRunner):
+        def run(self, args, *, capture=False, foreground=False, check=True):
+            command = tuple(str(arg) for arg in args)
+            if command == ("smolvm", "image", "ls", "--json"):
+                self.calls.append(command)
+                return ProcessResult(command, 0, stdout="not json")
+            return super().run(args, capture=capture, foreground=foreground, check=check)
+
+    runner = MalformedListRunner()
+    importer = SmolvmImageImporter(tmp_path, runner=runner)
+
+    result = importer.materialize(
+        ImageSource.oci_reference("example-dev:latest"), builder="podman"
+    )
+
+    assert result is MaterializeResult.IMPORTED
+    assert ("podman", "save") in [call[:2] for call in runner.calls]
+
+
+def test_reuses_existing_smolvm_import_when_local_builder_image_is_missing(
+    tmp_path: Path,
+) -> None:
+    class MissingRunner(RecordingRunner):
+        def run(self, args, *, capture=False, foreground=False, check=True):
+            command = tuple(str(arg) for arg in args)
+            if command[:4] == ("podman", "image", "inspect", "--format"):
+                return ProcessResult(command, 1, stderr="not found")
+            return super().run(args, capture=capture, foreground=foreground, check=check)
+
+    runner = MissingRunner(imported=True)
+    importer = SmolvmImageImporter(tmp_path, runner=runner)
+
+    result = importer.materialize(
+        ImageSource.oci_reference("example-dev:latest"), builder="podman"
+    )
+
+    assert result is MaterializeResult.ALREADY_IMPORTED
+    assert ("podman", "save") not in [call[:2] for call in runner.calls]
 
 
 def test_leaves_missing_local_image_as_registry_reference(tmp_path: Path) -> None:
@@ -108,7 +155,8 @@ def test_leaves_missing_local_image_as_registry_reference(tmp_path: Path) -> Non
     importer = SmolvmImageImporter(tmp_path, runner=runner)
     image = ImageSource.oci_reference("ghcr.io/org/app:latest")
 
-    importer.materialize(image, builder="podman")
+    result = importer.materialize(image, builder="podman")
+    assert result is MaterializeResult.NOT_LOCAL
     assert ("podman", "save") not in [call[:2] for call in runner.calls]
 
 
