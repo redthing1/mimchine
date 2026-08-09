@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -8,6 +9,10 @@ from typing import Any
 
 
 SCHEMA_VERSION = 1
+MACHINE_NAME_PATTERN = re.compile(
+    r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)*"
+)
 
 
 class ImageSourceKind(Enum):
@@ -441,10 +446,11 @@ class RunnerCapabilities:
 
 def validate_machine_name(name: str) -> str:
     text = _require_text(name, "machine name")
-    if text in {".", ".."} or "/" in text or "\\" in text:
-        raise ValueError(f"invalid machine name: {name}")
-    if any(ch.isspace() for ch in text):
-        raise ValueError(f"machine name cannot contain whitespace: {name}")
+    if MACHINE_NAME_PATTERN.fullmatch(text) is None:
+        raise ValueError(
+            "machine names must use lowercase letters, numbers, or dots, with "
+            "hyphens and underscores only inside labels"
+        )
     return text
 
 

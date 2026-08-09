@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 
-from .lifecycle import KEEPALIVE_COMMAND, STARTUP_HOOK
+from .lifecycle import KEEPALIVE_COMMAND
 from ..domain import (
     ExecSpec,
     IdentityMode,

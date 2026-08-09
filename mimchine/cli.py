@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +18,12 @@ from .output import (
 )
 from .process import ProcessError
 from .services import BuildOptions, BuildService, CreateOptions, MachineService
+from .ssh import (
+    SshSetupManager,
+    exec_process,
+    ssh_client_command,
+    ssh_proxy_command,
+)
 from .state import MachineNotFoundError
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
@@ -28,6 +35,10 @@ app = typer.Typer(
     context_settings=CONTEXT_SETTINGS,
     pretty_exceptions_show_locals=False,
 )
+setup_app = typer.Typer(
+    help="Configure optional host integrations.", no_args_is_help=True
+)
+app.add_typer(setup_app, name="setup")
 
 
 def version_callback(value: bool) -> None:
@@ -304,6 +315,75 @@ def exec_command(
             ),
         )
     )
+
+
+@app.command(
+    name="ssh",
+    help="Connect to a machine through managed OpenSSH.",
+    no_args_is_help=True,
+    context_settings={
+        "allow_interspersed_args": False,
+        "ignore_unknown_options": True,
+    },
+)
+def ssh_command(
+    name: str = typer.Argument(..., help="Machine name."),
+    command: Optional[list[str]] = typer.Argument(
+        None, help="Optional remote command."
+    ),
+) -> None:
+    guest_command = list(command or ())
+    if guest_command and guest_command[0] == "--":
+        guest_command = guest_command[1:]
+    _run(lambda: exec_process(ssh_client_command(name, tuple(guest_command))))
+
+
+@setup_app.command(name="ssh", help="Configure transparent .mim SSH hosts.")
+def setup_ssh(
+    remove: bool = typer.Option(
+        False,
+        "--remove",
+        help="Remove the managed SSH integration.",
+    ),
+) -> None:
+    def action() -> None:
+        manager = SshSetupManager.default()
+        if remove:
+            manager.remove()
+            logger.info("removed mimchine SSH integration")
+        else:
+            manager.setup()
+            logger.info("mimchine SSH integration is ready; use [ssh NAME.mim]")
+
+    _run(action)
+
+
+@app.command(name="_ssh-proxy", hidden=True)
+def _ssh_proxy(
+    host: str = typer.Argument(..., help="Internal SSH host name."),
+) -> None:
+    _run(lambda: exec_process(ssh_proxy_command(host)))
+
+
+@app.command(name="_ssh-session", hidden=True)
+def _ssh_session(
+    name: str = typer.Argument(..., help="Internal machine name."),
+) -> None:
+    def action() -> None:
+        try:
+            MachineService.default().ssh_session(
+                name,
+                original_command=os.environ.get("SSH_ORIGINAL_COMMAND"),
+                tty=bool(os.environ.get("SSH_TTY")),
+                term=os.environ.get("TERM"),
+            )
+        except ProcessError as exc:
+            # The remote process already wrote its stderr through the SSH channel.
+            if exc.result.stderr.strip():
+                logger.error(exc.result.stderr.strip())
+            raise typer.Exit(exc.result.returncode) from exc
+
+    _run(action)
 
 
 def _guest_command(command: list[str]) -> tuple[str, ...]:

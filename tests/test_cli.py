@@ -6,6 +6,7 @@ from typer.testing import CliRunner
 
 from mimchine import cli
 from mimchine.domain import IdentityMode, NetworkMode
+from mimchine.process import ProcessError, ProcessResult
 
 
 def test_build_cli_passes_canonical_options(monkeypatch, tmp_path: Path) -> None:
@@ -148,6 +149,101 @@ def test_exec_cli_accepts_separator_after_name(monkeypatch) -> None:
     assert result.exit_code == 0
     assert captured["name"] == "dev"
     assert captured["spec"].command == ("sh", "-lc", "true")
+
+
+def test_ssh_cli_executes_managed_client_command(monkeypatch) -> None:
+    captured = {}
+    monkeypatch.setattr(
+        cli,
+        "ssh_client_command",
+        lambda name, command: ("ssh", name, *command),
+    )
+    monkeypatch.setattr(
+        cli,
+        "exec_process",
+        lambda command: captured.setdefault("command", command),
+    )
+
+    result = CliRunner().invoke(cli.app, ["ssh", "dev", "--", "uname", "-a"])
+
+    assert result.exit_code == 0
+    assert captured["command"] == ("ssh", "dev", "uname", "-a")
+
+
+def test_setup_ssh_cli_is_idempotent_action(monkeypatch) -> None:
+    captured = []
+
+    class FakeSetupManager:
+        def setup(self):
+            captured.append("setup")
+
+        def remove(self):
+            captured.append("remove")
+
+    monkeypatch.setattr(
+        cli.SshSetupManager,
+        "default",
+        staticmethod(lambda: FakeSetupManager()),
+    )
+
+    setup_result = CliRunner().invoke(cli.app, ["setup", "ssh"])
+    remove_result = CliRunner().invoke(cli.app, ["setup", "ssh", "--remove"])
+
+    assert setup_result.exit_code == 0
+    assert remove_result.exit_code == 0
+    assert captured == ["setup", "remove"]
+
+
+def test_hidden_ssh_session_uses_openssh_environment(monkeypatch) -> None:
+    captured = {}
+
+    class FakeMachineService:
+        def ssh_session(self, name, *, original_command, tty, term):
+            captured.update(
+                name=name,
+                original_command=original_command,
+                tty=tty,
+                term=term,
+            )
+
+    monkeypatch.setattr(
+        cli.MachineService,
+        "default",
+        staticmethod(lambda: FakeMachineService()),
+    )
+    monkeypatch.setenv("SSH_ORIGINAL_COMMAND", "git-upload-pack /work/repo")
+    monkeypatch.setenv("SSH_TTY", "/dev/pts/4")
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    result = CliRunner().invoke(cli.app, ["_ssh-session", "dev"])
+
+    assert result.exit_code == 0
+    assert captured == {
+        "name": "dev",
+        "original_command": "git-upload-pack /work/repo",
+        "tty": True,
+        "term": "xterm-256color",
+    }
+
+
+def test_hidden_ssh_session_preserves_remote_failure_without_extra_output(
+    monkeypatch,
+) -> None:
+    class FakeMachineService:
+        def ssh_session(self, name, *, original_command, tty, term):
+            result = ProcessResult(("remote",), 23)
+            raise ProcessError(result)
+
+    monkeypatch.setattr(
+        cli.MachineService,
+        "default",
+        staticmethod(lambda: FakeMachineService()),
+    )
+
+    result = CliRunner().invoke(cli.app, ["_ssh-session", "dev"])
+
+    assert result.exit_code == 23
+    assert result.output == ""
 
 
 def test_delete_cli_passes_keep_shell_state(monkeypatch) -> None:

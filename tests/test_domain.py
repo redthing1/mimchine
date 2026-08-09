@@ -38,7 +38,10 @@ def test_machine_name_accepts_simple_names(name: str) -> None:
     assert validate_machine_name(name) == name
 
 
-@pytest.mark.parametrize("name", ["", ".", "..", "bad/name", "bad name"])
+@pytest.mark.parametrize(
+    "name",
+    ["", ".", "..", "bad/name", "bad name", "Bad", "bad%h", "-bad"],
+)
 def test_machine_name_rejects_unsafe_names(name: str) -> None:
     with pytest.raises(ValueError):
         validate_machine_name(name)

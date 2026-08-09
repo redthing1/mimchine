@@ -95,6 +95,24 @@ mim create work --profile work
 mim enter work
 ```
 
+## ssh
+
+enable transparent `.mim` SSH hosts once:
+```sh
+mim setup ssh
+ssh work.mim
+mim ssh work
+rsync -a ./src/ work.mim:/work/project/
+```
+
+mim installs one managed SSH include and uses the runner's exec transport: no
+guest daemon, port, or machine networking. stopped machines start automatically.
+`rsync` must be installed in the machine when used.
+
+```sh
+mim setup ssh --remove
+```
+
 ## shell state
 
 `mim enter` mounts per-machine shell state directory at `/mim/shell-state`. For `zsh` and `bash`, history is written there automatically. to keep shell state when deleting:

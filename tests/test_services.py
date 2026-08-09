@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -364,6 +365,72 @@ def test_exec_starts_machine_before_running_command(tmp_path: Path) -> None:
 
     assert runner.started
     assert runner.execs[0][1].command == ("echo", "hello")
+
+
+def test_ssh_session_runs_original_command_with_protocol_stdio(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    service = _service(tmp_path, runner)
+    service.create(CreateOptions(name="dev", image="alpine"))
+
+    service.ssh_session(
+        "dev",
+        original_command="rsync --server -logDtpre.iLsfxCIvu . /work",
+        tty=False,
+    )
+
+    assert runner.started
+    spec = runner.execs[0][1]
+    assert spec.command == (
+        "sh",
+        "-c",
+        "rsync --server -logDtpre.iLsfxCIvu . /work",
+    )
+    assert spec.interactive is True
+    assert spec.tty is False
+    assert spec.stream is True
+    assert spec.env == (
+        "MIM_MACHINE=dev",
+        "MIM_RUNNER=podman",
+        "MIM_SHELL_STATE=1",
+    )
+
+
+def test_ssh_session_enters_configured_shell_with_pty_and_term(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    service = _service(tmp_path, runner)
+    service.create(CreateOptions(name="dev", image="alpine", shell="zsh -l"))
+
+    service.ssh_session(
+        "dev",
+        original_command=None,
+        tty=True,
+        term="xterm-256color",
+    )
+
+    spec = runner.execs[0][1]
+    assert spec.command[-2:] == ("zsh", "-l")
+    assert spec.interactive is True
+    assert spec.tty is True
+    assert spec.stream is True
+    assert spec.env[-1] == "TERM=xterm-256color"
+
+
+def test_ssh_session_suppresses_successful_backend_start_output(
+    tmp_path: Path,
+    capfd,
+) -> None:
+    class NoisyRunner(FakeRunner):
+        def start(self, record):
+            os.write(1, b"backend-started\n")
+            super().start(record)
+
+    runner = NoisyRunner()
+    service = _service(tmp_path, runner)
+    service.create(CreateOptions(name="dev", image="alpine"))
+
+    service.ssh_session("dev", original_command="true", tty=False)
+
+    assert capfd.readouterr().out == ""
 
 
 def test_exec_rejects_missing_backend_with_clear_error(tmp_path: Path) -> None:

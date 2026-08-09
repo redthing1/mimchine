@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -217,6 +220,46 @@ class MachineService:
         _ensure_running(record, runner)
         runner.exec(record, _exec_spec(spec))
 
+    def ssh_session(
+        self,
+        name: str,
+        *,
+        original_command: str | None,
+        tty: bool,
+        term: str | None = None,
+    ) -> None:
+        record = self.store.load(name)
+        runner = self._runner(record.runner)
+        with _suppress_process_stdout():
+            _ensure_running(record, runner)
+
+        env = [
+            f"MIM_MACHINE={record.name}",
+            f"MIM_RUNNER={record.runner}",
+            f"MIM_SHELL_STATE={int(record.shell_state.enabled)}",
+        ]
+        if term:
+            env.append(f"TERM={term}")
+
+        if original_command is None:
+            selected_shell = record.shell or self.config.defaults.shell
+            command = enter_shell_command(selected_shell)
+        else:
+            command = ("sh", "-c", original_command)
+
+        runner.exec(
+            record,
+            _exec_spec(
+                ExecSpec(
+                    command=command,
+                    interactive=True,
+                    tty=tty,
+                    env=tuple(env),
+                    stream=True,
+                )
+            ),
+        )
+
     def inspect(self, name: str) -> MachineView:
         record = self.store.load(name)
         return MachineView(
@@ -387,6 +430,21 @@ def _ensure_running(record: MachineRecord, runner: Runner) -> RuntimeStatus:
     raise ValueError(
         f"machine [{record.name}] backend [{record.backend_id}] state is unknown"
     )
+
+
+@contextmanager
+def _suppress_process_stdout():
+    """Keep backend lifecycle chatter out of SSH protocol stdout."""
+    sys.stdout.flush()
+    saved_stdout = os.dup(1)
+    null_stdout = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(null_stdout, 1)
+        yield
+    finally:
+        os.dup2(saved_stdout, 1)
+        os.close(null_stdout)
+        os.close(saved_stdout)
 
 
 def _delete_created_shell_state(
