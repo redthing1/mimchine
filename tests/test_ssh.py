@@ -250,7 +250,10 @@ def test_ssh_proxy_builds_one_shot_forced_session_command(tmp_path: Path) -> Non
         store=store,
         sshd_path="sshd-test",
         mim_command=("mim-test",),
-        environment={"XDG_DATA_HOME": "/example/mim data"},
+        environment={
+            "PATH": "/opt/homebrew/bin:/usr/bin",
+            "XDG_DATA_HOME": "/example/mim data",
+        },
     )
 
     assert command[:7] == (
@@ -263,6 +266,7 @@ def test_ssh_proxy_builds_one_shot_forced_session_command(tmp_path: Path) -> Non
         "-o",
     )
     assert command[-1].startswith("ForceCommand=")
+    assert "PATH=/opt/homebrew/bin:/usr/bin" in command[-1]
     assert "'XDG_DATA_HOME=/example/mim data'" in command[-1]
     assert command[-1].endswith("mim-test _ssh-session dev")
 

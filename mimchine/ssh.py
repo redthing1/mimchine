@@ -296,13 +296,13 @@ def ssh_proxy_command(
     server = sshd_path or _required_executable("sshd")
     session_command = (*(mim_command or current_mim_command()), "_ssh-session", name)
     source_env = os.environ if environment is None else environment
-    xdg_env = tuple(
+    session_env = tuple(
         f"{key}={source_env[key]}"
-        for key in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME")
+        for key in ("PATH", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME")
         if source_env.get(key)
     )
-    if xdg_env:
-        session_command = (_required_executable("env"), *xdg_env, *session_command)
+    if session_env:
+        session_command = (_required_executable("env"), *session_env, *session_command)
     force_command = shlex.join(session_command)
     return (
         server,

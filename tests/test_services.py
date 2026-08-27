@@ -172,6 +172,17 @@ def test_create_merges_resource_defaults_profile_and_cli(tmp_path: Path) -> None
     assert record.resources.overlay_gib == 8
 
 
+def test_create_can_start_machine(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    service = _service(tmp_path, runner)
+
+    record = service.create(CreateOptions(name="dev", image="alpine", start=True))
+
+    assert runner.created == [record]
+    assert runner.started == [record]
+    assert runner.state is RuntimeState.RUNNING
+
+
 def test_profile_can_disable_shell_state(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

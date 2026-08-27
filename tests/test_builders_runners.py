@@ -22,18 +22,24 @@ from mimchine.domain import (
     ResourceSpec,
     RuntimeState,
 )
-from mimchine.process import ProcessResult
+from mimchine.process import ProcessError, ProcessResult
 from mimchine.runners import DockerRunner, PodmanRunner, SmolvmRunner
 from mimchine.runners.lifecycle import KEEPALIVE_COMMAND, STARTUP_HOOK
 
 
 class RecordingProcessRunner:
-    def __init__(self, returncode: int = 0, stdout: str = "[]"):
+    def __init__(
+        self,
+        returncode: int = 0,
+        stdout: str = "[]",
+        stderr: str = "",
+    ):
         self.calls: list[tuple[str, ...]] = []
         self.cwd: list[str | None] = []
         self.discard_stdout: list[bool] = []
         self.returncode = returncode
         self.stdout = stdout
+        self.stderr = stderr
 
     def run(
         self,
@@ -49,7 +55,7 @@ class RecordingProcessRunner:
         self.calls.append(command)
         self.cwd.append(None if cwd is None else str(cwd))
         self.discard_stdout.append(discard_stdout)
-        return ProcessResult(command, self.returncode, self.stdout, "")
+        return ProcessResult(command, self.returncode, self.stdout, self.stderr)
 
 
 def test_podman_build_command(tmp_path: Path) -> None:
@@ -257,6 +263,22 @@ def test_container_runner_inspect_uses_backend_json_shape() -> None:
 
     assert podman_process.calls[0] == ("podman", "inspect", "--format", "json", "dev")
     assert docker_process.calls[0] == ("docker", "inspect", "dev")
+
+
+@pytest.mark.parametrize("runner_type", [DockerRunner, SmolvmRunner])
+def test_runner_inspect_reports_missing_runtime_command(runner_type) -> None:
+    process = RecordingProcessRunner(
+        returncode=127,
+        stderr="command not found: runtime",
+    )
+    runner = runner_type(process)
+    record = MachineRecord.from_spec(
+        MachineSpec("dev", ImageSource.oci_reference("alpine"), runner.name),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    with pytest.raises(ProcessError, match="exit code 127"):
+        runner.inspect(record)
 
 
 def test_podman_runner_lifecycle_uses_neutral_host_cwd() -> None:

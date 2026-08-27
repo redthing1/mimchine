@@ -58,6 +58,7 @@ mim prune -f
 
 ```sh
 mim create dev --image app:dev --workspace .
+mim create dev --image app:dev --start
 mim create dev --image app:dev --mount ./cache:/cache:ro
 mim create dev --image app:dev --workspace .:rw,z
 mim create web --image app:dev --port 8080:80 --net

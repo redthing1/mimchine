@@ -76,6 +76,7 @@ class CreateOptions:
     identity: IdentitySpec | None = None
     shell_state: bool | None = None
     container_args: tuple[str, ...] = ()
+    start: bool = False
 
 
 @dataclass(frozen=True)
@@ -164,6 +165,8 @@ class MachineService:
             _try_delete_backend(runner, record)
             _delete_created_shell_state(self.shell_state, record, shell_state_preexisted)
             raise
+        if options.start:
+            _ensure_running(record, runner)
         return record
 
     def start(self, name: str) -> RuntimeStatus:

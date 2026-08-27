@@ -223,6 +223,11 @@ def create(
         "--container-arg",
         help="Extra argument passed to podman/docker create. May be repeated.",
     ),
+    start_machine: bool = typer.Option(
+        False,
+        "--start",
+        help="Start the machine after creating it.",
+    ),
 ) -> None:
     _run(
         lambda: MachineService.default().create(
@@ -252,6 +257,7 @@ def create(
                 identity=_identity_from_flags(root, host_user),
                 shell_state=shell_state,
                 container_args=tuple(container_args),
+                start=start_machine,
             )
         )
     )

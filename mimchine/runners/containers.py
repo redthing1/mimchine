@@ -16,7 +16,7 @@ from ..domain import (
     RuntimeState,
     RuntimeStatus,
 )
-from ..process import ProcessRunner
+from ..process import ProcessError, ProcessRunner
 
 
 NEUTRAL_BACKEND_CWD = "/"
@@ -124,6 +124,8 @@ class _ContainerRunner:
             check=False,
             cwd=NEUTRAL_BACKEND_CWD,
         )
+        if result.returncode == 127:
+            raise ProcessError(result)
         if result.returncode != 0:
             return RuntimeStatus(
                 record.name,
