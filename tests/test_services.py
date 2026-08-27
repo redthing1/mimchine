@@ -46,6 +46,12 @@ CAPS = RunnerCapabilities(
 )
 
 
+@pytest.fixture(autouse=True)
+def clear_host_terminal_environment(monkeypatch) -> None:
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.delenv("COLORTERM", raising=False)
+
+
 @dataclass
 class FakeRunner:
     name: str = "podman"
@@ -353,6 +359,24 @@ def test_enter_uses_config_default_shell(tmp_path: Path) -> None:
         "MIM_MACHINE=dev",
         "MIM_RUNNER=podman",
         "MIM_SHELL_STATE=1",
+    )
+
+
+def test_enter_forwards_host_terminal_capabilities(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("COLORTERM", "truecolor")
+    runner = FakeRunner()
+    service = _service(tmp_path, runner)
+    service.create(CreateOptions(name="dev", image="alpine"))
+
+    service.enter("dev")
+
+    assert runner.execs[0][1].env[-2:] == (
+        "TERM=xterm-256color",
+        "COLORTERM=truecolor",
     )
 
 

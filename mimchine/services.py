@@ -195,11 +195,14 @@ class MachineService:
 
         selected_shell = shell or record.shell or self.config.defaults.shell
         shell_command = enter_shell_command(selected_shell)
-        exec_env = (
+        exec_env = [
             f"MIM_MACHINE={record.name}",
             f"MIM_RUNNER={record.runner}",
             f"MIM_SHELL_STATE={int(record.shell_state.enabled)}",
-        )
+        ]
+        for variable in ("TERM", "COLORTERM"):
+            if value := os.environ.get(variable):
+                exec_env.append(f"{variable}={value}")
         workdir = _mapped_cwd(record.mounts) or record.workdir
         runner.exec(
             record,
@@ -208,7 +211,7 @@ class MachineService:
                     command=shell_command,
                     interactive=True,
                     tty=True,
-                    env=exec_env,
+                    env=tuple(exec_env),
                     workdir=workdir,
                 )
             ),
