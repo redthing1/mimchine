@@ -178,7 +178,7 @@ class SshSetupManager:
             "PrintMotd no",
             "PrintLastLog no",
             "MaxAuthTries 1",
-            "MaxSessions 1",
+            "MaxSessions 10",
             "LogLevel ERROR",
         )
         return "\n".join(lines) + "\n"

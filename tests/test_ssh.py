@@ -88,7 +88,7 @@ def test_setup_ssh_generates_restricted_managed_configuration(tmp_path: Path) ->
     assert "AllowTcpForwarding no" in server
     assert "AllowAgentForwarding no" in server
     assert "PermitRootLogin prohibit-password" in server
-    assert "MaxSessions 1" in server
+    assert "MaxSessions 10" in server
     assert paths.user_config.read_bytes().startswith(INCLUDE_BEGIN)
     assert os.stat(paths.client_key).st_mode & 0o777 == 0o600
     assert os.stat(paths.state_dir).st_mode & 0o777 == 0o700
