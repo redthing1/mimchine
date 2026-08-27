@@ -204,7 +204,7 @@ class MachineService:
         for variable in ("TERM", "COLORTERM"):
             if value := os.environ.get(variable):
                 exec_env.append(f"{variable}={value}")
-        workdir = _mapped_cwd(record.mounts) or record.workdir
+        workdir = _mapped_cwd(record.mounts) or _session_workdir(record)
         runner.exec(
             record,
             _exec_spec(
@@ -258,6 +258,7 @@ class MachineService:
                     interactive=True,
                     tty=tty,
                     env=tuple(env),
+                    workdir=_session_workdir(record),
                     stream=True,
                 )
             ),
@@ -558,6 +559,13 @@ def _bool_option(
 
 def _mapped_cwd(mounts: Iterable[MountSpec]) -> str | None:
     return map_host_path_to_guest(Path.cwd(), tuple(mounts))
+
+
+def _session_workdir(record: MachineRecord) -> str | None:
+    return record.workdir or next(
+        (mount.target for mount in record.mounts if mount.kind == "workspace"),
+        None,
+    )
 
 
 def _now() -> str:

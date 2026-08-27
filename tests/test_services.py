@@ -429,6 +429,39 @@ def test_ssh_session_runs_original_command_with_protocol_stdio(tmp_path: Path) -
     )
 
 
+def test_ssh_session_uses_first_workspace_as_session_workdir(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner = FakeRunner()
+    service = _service(tmp_path, runner)
+    service.create(
+        CreateOptions(name="dev", image="alpine", workspaces=(str(workspace),))
+    )
+
+    service.ssh_session("dev", original_command="pwd", tty=False)
+
+    assert runner.execs[0][1].workdir == "/work/workspace"
+
+
+def test_ssh_session_prefers_explicit_workdir_over_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner = FakeRunner()
+    service = _service(tmp_path, runner)
+    service.create(
+        CreateOptions(
+            name="dev",
+            image="alpine",
+            workspaces=(str(workspace),),
+            workdir="/custom",
+        )
+    )
+
+    service.ssh_session("dev", original_command="pwd", tty=False)
+
+    assert runner.execs[0][1].workdir == "/custom"
+
+
 def test_ssh_session_enters_configured_shell_with_pty_and_term(tmp_path: Path) -> None:
     runner = FakeRunner()
     service = _service(tmp_path, runner)
