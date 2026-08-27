@@ -27,6 +27,7 @@ class ProcessRunner:
         *,
         capture: bool = False,
         foreground: bool = False,
+        discard_stdout: bool = False,
         check: bool = True,
         cwd: str | Path | None = None,
     ) -> ProcessResult:
@@ -34,10 +35,16 @@ class ProcessRunner:
         if not command:
             raise ValueError("command cannot be empty")
         cwd_text = None if cwd is None else str(cwd)
+        if capture and discard_stdout:
+            raise ValueError("capture and discard_stdout cannot be combined")
 
         try:
             if foreground:
-                returncode = subprocess.call(command, cwd=cwd_text)
+                returncode = subprocess.call(
+                    command,
+                    cwd=cwd_text,
+                    stdout=subprocess.DEVNULL if discard_stdout else None,
+                )
                 result = ProcessResult(command, returncode)
             else:
                 completed = subprocess.run(
@@ -45,7 +52,13 @@ class ProcessRunner:
                     check=False,
                     text=True,
                     cwd=cwd_text,
-                    stdout=subprocess.PIPE if capture else None,
+                    stdout=(
+                        subprocess.PIPE
+                        if capture
+                        else subprocess.DEVNULL
+                        if discard_stdout
+                        else None
+                    ),
                     stderr=subprocess.PIPE if capture else None,
                 )
                 result = ProcessResult(

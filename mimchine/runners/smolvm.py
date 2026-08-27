@@ -64,24 +64,27 @@ class SmolvmRunner:
             args.append("--gpu")
 
         args.extend(["--", "sh", "-lc", KEEPALIVE_COMMAND])
-        self.runner.run(args, foreground=True)
+        self.runner.run(args, foreground=True, discard_stdout=True)
 
     def start(self, record: MachineRecord) -> None:
         self.runner.run(
             ["smolvm", "machine", "start", "--name", record.backend_id],
             foreground=True,
+            discard_stdout=True,
         )
 
     def stop(self, record: MachineRecord) -> None:
         self.runner.run(
             ["smolvm", "machine", "stop", "--name", record.backend_id],
             foreground=True,
+            discard_stdout=True,
         )
 
     def delete(self, record: MachineRecord) -> None:
         self.runner.run(
             ["smolvm", "machine", "delete", "--name", record.backend_id, "-f"],
             foreground=True,
+            discard_stdout=True,
             check=False,
         )
 

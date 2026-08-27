@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -233,8 +231,7 @@ class MachineService:
     ) -> None:
         record = self.store.load(name)
         runner = self._runner(record.runner)
-        with _suppress_process_stdout():
-            _ensure_running(record, runner)
+        _ensure_running(record, runner)
 
         env = [
             f"MIM_MACHINE={record.name}",
@@ -433,21 +430,6 @@ def _ensure_running(record: MachineRecord, runner: Runner) -> RuntimeStatus:
     raise ValueError(
         f"machine [{record.name}] backend [{record.backend_id}] state is unknown"
     )
-
-
-@contextmanager
-def _suppress_process_stdout():
-    """Keep backend lifecycle chatter out of SSH protocol stdout."""
-    sys.stdout.flush()
-    saved_stdout = os.dup(1)
-    null_stdout = os.open(os.devnull, os.O_WRONLY)
-    try:
-        os.dup2(null_stdout, 1)
-        yield
-    finally:
-        os.dup2(saved_stdout, 1)
-        os.close(null_stdout)
-        os.close(saved_stdout)
 
 
 def _delete_created_shell_state(

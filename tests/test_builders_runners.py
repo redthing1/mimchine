@@ -31,13 +31,24 @@ class RecordingProcessRunner:
     def __init__(self, returncode: int = 0, stdout: str = "[]"):
         self.calls: list[tuple[str, ...]] = []
         self.cwd: list[str | None] = []
+        self.discard_stdout: list[bool] = []
         self.returncode = returncode
         self.stdout = stdout
 
-    def run(self, args, *, capture=False, foreground=False, check=True, cwd=None):
+    def run(
+        self,
+        args,
+        *,
+        capture=False,
+        foreground=False,
+        discard_stdout=False,
+        check=True,
+        cwd=None,
+    ):
         command = tuple(str(arg) for arg in args)
         self.calls.append(command)
         self.cwd.append(None if cwd is None else str(cwd))
+        self.discard_stdout.append(discard_stdout)
         return ProcessResult(command, self.returncode, self.stdout, "")
 
 
@@ -117,6 +128,7 @@ def test_podman_runner_create_uses_record_as_command_source(tmp_path: Path) -> N
         "-lc",
         KEEPALIVE_COMMAND,
     )
+    assert runner.discard_stdout == [True]
     assert STARTUP_HOOK in KEEPALIVE_COMMAND
 
 
@@ -262,6 +274,7 @@ def test_podman_runner_lifecycle_uses_neutral_host_cwd() -> None:
     podman.delete(record)
 
     assert runner.cwd == ["/", "/", "/", "/", "/"]
+    assert runner.discard_stdout == [True, False, False, True, True]
 
 
 def test_smolvm_runner_create_maps_machine_flags(tmp_path: Path) -> None:
@@ -293,6 +306,7 @@ def test_smolvm_runner_create_maps_machine_flags(tmp_path: Path) -> None:
     assert "--ssh-agent" in command
     assert "--gpu" in command
     assert command[-4:] == ("--", "sh", "-lc", KEEPALIVE_COMMAND)
+    assert runner.discard_stdout == [True]
 
 
 def test_smolvm_runner_delete_uses_named_machine_flag() -> None:
@@ -312,6 +326,7 @@ def test_smolvm_runner_delete_uses_named_machine_flag() -> None:
         "vm",
         "-f",
     )
+    assert runner.discard_stdout == [True]
 
 
 def test_smolvm_runner_create_keeps_shell_state_mount_plain(tmp_path: Path) -> None:

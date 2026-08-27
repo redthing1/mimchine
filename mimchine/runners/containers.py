@@ -76,12 +76,13 @@ class _ContainerRunner:
             args.extend(self._ssh_agent_args())
         args.extend(record.container_args)
         args.extend([record.image.value, "sh", "-lc", KEEPALIVE_COMMAND])
-        self.runner.run(args, foreground=True)
+        self.runner.run(args, foreground=True, discard_stdout=True)
 
     def start(self, record: MachineRecord) -> None:
         self.runner.run(
             [self.binary, "start", record.backend_id],
             foreground=True,
+            discard_stdout=True,
             cwd=NEUTRAL_BACKEND_CWD,
         )
 
@@ -89,6 +90,7 @@ class _ContainerRunner:
         self.runner.run(
             [self.binary, "stop", record.backend_id],
             foreground=True,
+            discard_stdout=True,
             cwd=NEUTRAL_BACKEND_CWD,
         )
 
@@ -96,6 +98,7 @@ class _ContainerRunner:
         self.runner.run(
             [self.binary, "rm", "-f", record.backend_id],
             foreground=True,
+            discard_stdout=True,
             check=False,
             cwd=NEUTRAL_BACKEND_CWD,
         )
