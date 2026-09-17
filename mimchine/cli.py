@@ -9,6 +9,7 @@ import typer
 from . import __VERSION__
 from .constants import APP_NAME
 from .domain import ExecSpec, IdentityMode, IdentitySpec, NetworkMode, ResourceSpec
+from .gpu import inspect_gpu_host
 from .log import configure_logging, logger
 from .output import (
     print_key_value_table,
@@ -198,7 +199,7 @@ def create(
         "--no-ssh-agent",
         help="Disable SSH agent forwarding.",
     ),
-    gpu: bool = typer.Option(False, "--gpu", help="Request backend GPU support."),
+    gpu: bool = typer.Option(False, "--gpu", help="Expose all host GPUs."),
     no_gpu: bool = typer.Option(False, "--no-gpu", help="Disable backend GPU support."),
     cpus: Optional[int] = typer.Option(None, "--cpus", "-c", min=1, help="vCPU count."),
     mem: Optional[int] = typer.Option(
@@ -364,6 +365,16 @@ def setup_ssh(
     _run(action)
 
 
+@setup_app.command(name="gpu", help="Check host GPU forwarding support.")
+def setup_gpu() -> None:
+    def action() -> None:
+        host = inspect_gpu_host()
+        host.require_ready()
+        logger.info(f"GPU forwarding is ready: {', '.join(host.podman_devices)}")
+
+    _run(action)
+
+
 @app.command(name="_ssh-proxy", hidden=True)
 def _ssh_proxy(
     host: str = typer.Argument(..., help="Internal SSH host name."),
@@ -475,6 +486,7 @@ def inspect(name: str = typer.Argument(..., help="Machine name.")) -> None:
                 ("network", record.network.mode.value),
                 ("workdir", record.workdir or ""),
                 ("shell", record.shell or service.config.defaults.shell or "auto"),
+                ("gpu", "yes" if record.gpu else "no"),
                 ("created", record.created_at),
             ],
         )

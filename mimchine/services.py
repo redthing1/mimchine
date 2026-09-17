@@ -406,8 +406,8 @@ def _validate_runner_support(record: MachineRecord, runner: Runner) -> None:
         raise ValueError(f"runner [{runner.name}] does not support host identity")
     if record.ssh_agent and not caps.ssh_agent:
         raise ValueError(f"runner [{runner.name}] does not support SSH agent forwarding")
-    if record.gpu and not caps.gpu_vulkan:
-        raise ValueError(f"runner [{runner.name}] does not support Vulkan GPU forwarding")
+    if record.gpu and not caps.gpu:
+        raise ValueError(f"runner [{runner.name}] does not support GPU forwarding")
     if record.container_args and record.runner not in {"podman", "docker"}:
         raise ValueError(f"runner [{runner.name}] does not support container args")
 

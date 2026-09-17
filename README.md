@@ -67,6 +67,17 @@ mim create dev --image app:dev --host-user
 mim create dev --image app:dev --root
 ```
 
+## gpu
+
+```sh
+mim setup gpu
+mim create dev --image app:dev --gpu
+```
+
+`--gpu` exposes every detected GPU with Podman on native Linux. NVIDIA requires
+NVIDIA Container Toolkit with CDI. The image supplies its own Mesa, ROCm, or
+CUDA userspace libraries.
+
 ## config
 
 your config file is at `~/.config/mimchine/config.toml`

@@ -27,6 +27,7 @@ def test_machine_record_round_trips(tmp_path: Path) -> None:
         ports=(PortBind(8080, 80),),
         env=("APP_ENV=dev",),
         network=NetworkSpec(NetworkMode.NONE),
+        gpu=True,
     )
 
     record = MachineRecord.from_spec(spec, created_at="2026-01-01T00:00:00+00:00")

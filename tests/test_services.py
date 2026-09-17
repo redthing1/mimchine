@@ -38,7 +38,7 @@ CAPS = RunnerCapabilities(
     restricted_network=True,
     host_network=True,
     ssh_agent=True,
-    gpu_vulkan=True,
+    gpu=True,
     root_identity=True,
     host_identity=True,
     mount_options=True,
@@ -507,7 +507,7 @@ def test_rejects_runner_unsupported_file_mount(tmp_path: Path) -> None:
         restricted_network=True,
         host_network=True,
         ssh_agent=True,
-        gpu_vulkan=True,
+        gpu=True,
         root_identity=True,
         host_identity=True,
     )
@@ -592,7 +592,7 @@ def test_rejects_runner_unsupported_image_source(tmp_path: Path) -> None:
         restricted_network=True,
         host_network=True,
         ssh_agent=True,
-        gpu_vulkan=True,
+        gpu=True,
         root_identity=True,
         host_identity=True,
     )
@@ -638,7 +638,7 @@ def test_rejects_offline_oci_reference_when_runner_requires_network(
         restricted_network=True,
         host_network=True,
         ssh_agent=True,
-        gpu_vulkan=True,
+        gpu=True,
         root_identity=True,
         host_identity=True,
     )
@@ -677,7 +677,7 @@ def test_imported_smolvm_image_can_be_created_without_network(tmp_path: Path) ->
         restricted_network=True,
         host_network=True,
         ssh_agent=True,
-        gpu_vulkan=True,
+        gpu=True,
         root_identity=True,
         host_identity=True,
     )
@@ -742,7 +742,7 @@ def test_rejects_runner_unsupported_root_identity(tmp_path: Path) -> None:
         restricted_network=True,
         host_network=True,
         ssh_agent=True,
-        gpu_vulkan=True,
+        gpu=True,
         root_identity=False,
         host_identity=True,
     )

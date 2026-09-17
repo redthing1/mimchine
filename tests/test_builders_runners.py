@@ -165,7 +165,13 @@ def test_podman_runner_create_relabels_shell_state_mount(tmp_path: Path) -> None
     assert f"{state.resolve()}:/mim/shell-state:rw,Z" in command
 
 
-def test_podman_runner_create_passes_container_args_before_image() -> None:
+def test_podman_runner_create_passes_gpu_and_container_args_before_image(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "mimchine.runners.containers.podman_gpu_args",
+        lambda: ("--device", "/dev/dri/renderD128"),
+    )
     runner = RecordingProcessRunner()
     record = MachineRecord.from_spec(
         MachineSpec(
@@ -173,9 +179,9 @@ def test_podman_runner_create_passes_container_args_before_image() -> None:
             image=ImageSource.oci_reference("fedora:latest"),
             runner="podman",
             identity=IdentitySpec(IdentityMode.ROOT),
+            gpu=True,
             container_args=(
                 "--security-opt=label=type:example.process",
-                "--device=vendor.example/gpu=all",
                 "--cap-drop=all",
             ),
         ),
@@ -186,9 +192,10 @@ def test_podman_runner_create_passes_container_args_before_image() -> None:
 
     command = runner.calls[0]
     image_index = command.index("fedora:latest")
-    assert command[image_index - 3 : image_index] == (
+    assert command[image_index - 4 : image_index] == (
+        "--device",
+        "/dev/dri/renderD128",
         "--security-opt=label=type:example.process",
-        "--device=vendor.example/gpu=all",
         "--cap-drop=all",
     )
 

@@ -438,7 +438,7 @@ class RunnerCapabilities:
     restricted_network: bool
     host_network: bool
     ssh_agent: bool
-    gpu_vulkan: bool
+    gpu: bool
     root_identity: bool
     host_identity: bool
     mount_options: bool = False

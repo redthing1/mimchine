@@ -67,6 +67,7 @@ def test_create_cli_passes_machine_intent(monkeypatch, tmp_path: Path) -> None:
             "--no-net",
             "--host-user",
             "--start",
+            "--gpu",
             "--container-arg=--device=vendor.example/gpu=all",
         ],
     )
@@ -81,6 +82,7 @@ def test_create_cli_passes_machine_intent(monkeypatch, tmp_path: Path) -> None:
     assert options.network is NetworkMode.NONE
     assert options.identity.mode is IdentityMode.HOST
     assert options.start is True
+    assert options.gpu is True
     assert options.container_args == ("--device=vendor.example/gpu=all",)
 
 

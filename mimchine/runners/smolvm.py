@@ -31,7 +31,7 @@ class SmolvmRunner:
         restricted_network=True,
         host_network=False,
         ssh_agent=True,
-        gpu_vulkan=True,
+        gpu=True,
         root_identity=False,
         host_identity=False,
     )

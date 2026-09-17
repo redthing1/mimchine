@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .lifecycle import KEEPALIVE_COMMAND
 from ..domain import (
@@ -17,6 +17,7 @@ from ..domain import (
     RuntimeStatus,
 )
 from ..process import ProcessError, ProcessRunner
+from ..gpu import podman_gpu_args
 
 
 NEUTRAL_BACKEND_CWD = "/"
@@ -44,7 +45,7 @@ class _ContainerRunner:
         restricted_network=False,
         host_network=True,
         ssh_agent=True,
-        gpu_vulkan=False,
+        gpu=False,
         root_identity=True,
         host_identity=True,
         mount_options=True,
@@ -74,6 +75,8 @@ class _ContainerRunner:
             args.extend(["-p", port.arg()])
         if record.ssh_agent:
             args.extend(self._ssh_agent_args())
+        if record.gpu:
+            args.extend(self._gpu_args())
         args.extend(record.container_args)
         args.extend([record.image.value, "sh", "-lc", KEEPALIVE_COMMAND])
         self.runner.run(args, foreground=True, discard_stdout=True)
@@ -171,6 +174,9 @@ class _ContainerRunner:
             f"SSH_AUTH_SOCK={guest_socket}",
         ]
 
+    def _gpu_args(self) -> tuple[str, ...]:
+        raise ValueError(f"runner [{self.name}] does not support GPU forwarding")
+
     def _inspect_args(self, backend_id: str) -> list[str]:
         return [self.binary, "inspect", backend_id]
 
@@ -178,6 +184,10 @@ class _ContainerRunner:
 class PodmanRunner(_ContainerRunner):
     name = "podman"
     binary = "podman"
+    capabilities = replace(_ContainerRunner.capabilities, gpu=True)
+
+    def _gpu_args(self) -> tuple[str, ...]:
+        return podman_gpu_args()
 
     def _image_identity_args(self, record: MachineRecord) -> list[str]:
         identity = self._resolve_image_identity(record.image.value)
