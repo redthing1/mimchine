@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 
 from .domain import MachineRecord, validate_machine_name
+from .log import logger
 
 
 class MachineNotFoundError(KeyError):
@@ -46,7 +47,7 @@ class MachineStore:
         return MachineRecord.from_data(data)
 
     def delete(self, name: str) -> None:
-        shutil.rmtree(self.machine_dir(name), ignore_errors=True)
+        shutil.rmtree(self.machine_dir(name))
 
     def list(self) -> list[MachineRecord]:
         if not self.base_dir.is_dir():
@@ -59,5 +60,8 @@ class MachineStore:
             record_path = entry / "machine.json"
             if not record_path.is_file():
                 continue
-            records.append(self.load(entry.name))
+            try:
+                records.append(self.load(entry.name))
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("skipping machine [%s]: %s", entry.name, exc)
         return records

@@ -53,6 +53,23 @@ def test_machine_store_invalid_json_raises(tmp_path: Path) -> None:
         store.load("bad")
 
 
+def test_machine_store_list_skips_invalid_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = MachineStore(tmp_path)
+    path = store.record_path("old")
+    path.parent.mkdir(parents=True)
+    path.write_text('{"schema_version": 1}', encoding="utf-8")
+    warnings = []
+    monkeypatch.setattr(
+        "mimchine.state.logger.warning",
+        lambda message, *args: warnings.append(message % args),
+    )
+
+    assert store.list() == []
+    assert warnings == ["skipping machine [old]: unsupported machine record schema: 1"]
+
+
 def test_machine_store_delete_removes_owned_directory(tmp_path: Path) -> None:
     store = MachineStore(tmp_path)
     record = MachineRecord(
@@ -67,3 +84,24 @@ def test_machine_store_delete_removes_owned_directory(tmp_path: Path) -> None:
     store.delete("dev")
 
     assert not store.machine_dir("dev").exists()
+
+
+def test_machine_store_delete_does_not_hide_filesystem_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(path: Path) -> None:
+        raise PermissionError(path)
+
+    store = MachineStore(tmp_path)
+    store.save(
+        MachineRecord(
+            "dev",
+            "alpine",
+            "podman",
+            created_at="2026-01-01T00:00:00+00:00",
+        )
+    )
+    monkeypatch.setattr("mimchine.state.shutil.rmtree", fail)
+
+    with pytest.raises(PermissionError):
+        store.delete("dev")
