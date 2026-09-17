@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import mimchine.ssh as ssh_module
-from mimchine.domain import ImageSource, MachineRecord, MachineSpec
+from mimchine.domain import MachineRecord
 from mimchine.process import ProcessError, ProcessResult
 from mimchine.ssh import (
     INCLUDE_BEGIN,
@@ -238,8 +238,10 @@ def test_ssh_proxy_builds_one_shot_forced_session_command(tmp_path: Path) -> Non
     paths.server_config.parent.mkdir(parents=True)
     paths.server_config.write_text("LogLevel ERROR\n", encoding="utf-8")
     store = MachineStore(tmp_path / "machines")
-    record = MachineRecord.from_spec(
-        MachineSpec("dev", ImageSource.oci_reference("alpine"), "podman"),
+    record = MachineRecord(
+        "dev",
+        "alpine",
+        "podman",
         created_at="2026-01-01T00:00:00+00:00",
     )
     store.save(record)

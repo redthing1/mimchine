@@ -68,6 +68,10 @@ def test_create_cli_passes_machine_intent(monkeypatch, tmp_path: Path) -> None:
             "--host-user",
             "--start",
             "--gpu",
+            "--cpus",
+            "3",
+            "--mem",
+            "512",
             "--container-arg=--device=vendor.example/gpu=all",
         ],
     )
@@ -80,9 +84,11 @@ def test_create_cli_passes_machine_intent(monkeypatch, tmp_path: Path) -> None:
     assert options.workspaces == (str(workspace),)
     assert options.home_shares == (str(home_share),)
     assert options.network is NetworkMode.NONE
-    assert options.identity.mode is IdentityMode.HOST
+    assert options.identity is IdentityMode.HOST
     assert options.start is True
     assert options.gpu is True
+    assert options.cpus == 3
+    assert options.memory_mib == 512
     assert options.container_args == ("--device=vendor.example/gpu=all",)
 
 
@@ -268,29 +274,3 @@ def test_delete_cli_passes_keep_shell_state(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert captured == {"name": "dev", "keep_shell_state": True}
-
-
-def test_prune_cli_passes_dry_run(monkeypatch) -> None:
-    captured = {}
-
-    class Result:
-        image_refs = 3
-        image_entries = 1
-        staging_entries = 2
-        bytes_reclaimable = 1024
-
-    class FakeMachineService:
-        def prune(self, *, dry_run):
-            captured["dry_run"] = dry_run
-            return Result()
-
-    monkeypatch.setattr(
-        cli.MachineService,
-        "default",
-        staticmethod(lambda: FakeMachineService()),
-    )
-
-    result = CliRunner().invoke(cli.app, ["prune", "--dry-run"])
-
-    assert result.exit_code == 0
-    assert captured == {"dry_run": True}

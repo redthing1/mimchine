@@ -1,70 +1,35 @@
 # mimchine
 
-ergonomic local **mini-machines**. build oci images, then create named machines with useful stuff mounted.
+Ergonomic named development environments from OCI images. Uses Podman by
+default; Docker is also supported.
 
-run using docker, podman, or kvm microvm.
-
-## dev
+## development
 
 ```sh
 uv sync --locked
 uv run mim --help
-```
-
-build demo image:
-```sh
 uv run mim build mim-fed:dev -f demo/mim_fed.docker -C demo
 ```
 
-create and enter machine:
+## use
+
 ```sh
-uv run mim create dev --image mim-fed:dev --workspace .
-uv run mim enter dev
+mim create dev --image mim-fed:dev --workspace .
+mim enter dev
+mim exec dev pwd
+mim stop dev
+mim delete dev -f
 ```
 
-run command:
-```sh
-uv run mim exec dev pwd
-```
-
-stop/delete it:
-```sh
-uv run mim stop dev
-uv run mim delete dev -f
-```
-
-## backends
-
-choose a builder:
-```sh
-mim build app:dev -f Containerfile -C . --builder podman
-mim build app:dev -f Dockerfile -C . --builder docker
-```
-
-choose a runner:
-```sh
-mim create dev --image app:dev --runner podman
-mim create dev --image app:dev --runner docker
-mim create dev --image alpine --runner smolvm --net
-```
-
-remove unused cache data:
-```sh
-mim prune --dry-run
-mim prune -f
-```
-
-# common options
+Common creation options:
 
 ```sh
-mim create dev --image app:dev --workspace .
 mim create dev --image app:dev --start
 mim create dev --image app:dev --mount ./cache:/cache:ro
-mim create dev --image app:dev --workspace .:rw,z
 mim create web --image app:dev --port 8080:80 --net
 mim create git --image app:dev --ssh-agent
 mim create dev --image app:dev --host-user
-mim create dev --image app:dev --root
+mim create dev --image app:dev --runner docker
 ```
 
 ## gpu
@@ -74,13 +39,13 @@ mim setup gpu
 mim create dev --image app:dev --gpu
 ```
 
-`--gpu` exposes every detected GPU with Podman on native Linux. NVIDIA requires
-NVIDIA Container Toolkit with CDI. The image supplies its own Mesa, ROCm, or
-CUDA userspace libraries.
+With Podman on native Linux, `--gpu` exposes every detected GPU. NVIDIA
+requires NVIDIA Container Toolkit with CDI. The image supplies its own Mesa,
+ROCm, or CUDA userspace libraries.
 
-## config
+## configuration
 
-your config file is at `~/.config/mimchine/config.toml`
+`~/.config/mimchine/config.toml`:
 
 ```toml
 [defaults]
@@ -90,8 +55,6 @@ network = "default"
 shell = "auto"
 cpus = 2
 memory = 2048
-storage = 12
-overlay = 4
 
 [profiles.work]
 image = "mim-fed:dev"
@@ -101,7 +64,6 @@ network = "none"
 identity = "host"
 ```
 
-use a profile:
 ```sh
 mim create work --profile work
 mim enter work
@@ -109,25 +71,23 @@ mim enter work
 
 ## ssh
 
-enable transparent `.mim` SSH hosts once:
 ```sh
 mim setup ssh
 ssh work.mim
 mim ssh work
 rsync -a ./src/ work.mim:/work/project/
-```
-
-mim installs one managed SSH include and uses the runner's exec transport: no
-guest daemon, port, or machine networking. stopped machines start automatically.
-`rsync` must be installed in the machine when used.
-
-```sh
 mim setup ssh --remove
 ```
 
+SSH uses the runner's exec transport: no guest daemon, port, or network is
+required. Stopped machines start automatically. `rsync` must exist in the
+image when used.
+
 ## shell state
 
-`mim enter` mounts per-machine shell state directory at `/mim/shell-state`. For `zsh` and `bash`, history is written there automatically. to keep shell state when deleting:
+`mim enter` stores Bash and Zsh history under `/mim/shell-state`. Preserve it
+when deleting a machine with:
+
 ```sh
 mim delete dev -f --keep-shell-state
 ```

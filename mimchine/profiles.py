@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import AppConfig, validate_runner
-from .domain import IdentityMode, IdentitySpec, NetworkMode
+from .domain import IdentityMode, NetworkMode
 
 
 PROFILE_KEYS = {
@@ -30,14 +30,12 @@ PROFILE_KEYS = {
     "container_args",
     "cpus",
     "memory",
-    "storage",
-    "overlay",
 }
 
 
 @dataclass(frozen=True)
 class Profile:
-    name: str
+    name: str | None = None
     image: str | None = None
     runner: str | None = None
     workspaces: tuple[str, ...] = ()
@@ -47,7 +45,7 @@ class Profile:
     env: tuple[str, ...] = ()
     workdir: str | None = None
     network: NetworkMode | None = None
-    identity: IdentitySpec | None = None
+    identity: IdentityMode | None = None
     shell: str | None = None
     shell_state: bool | None = None
     ssh_agent: bool | None = None
@@ -55,13 +53,11 @@ class Profile:
     container_args: tuple[str, ...] = ()
     cpus: int | None = None
     memory: int | None = None
-    storage: int | None = None
-    overlay: int | None = None
 
 
-def load_profile(config: AppConfig, name: str | None) -> Profile | None:
+def load_profile(config: AppConfig, name: str | None) -> Profile:
     if name is None:
-        return None
+        return Profile()
     profile_name = name.strip()
     if not profile_name:
         raise ValueError("profile name cannot be empty")
@@ -84,7 +80,7 @@ def read_profile(name: str, data: dict[str, Any]) -> Profile:
     network_text = _optional_text(data.get("network"))
     network = None if network_text is None else NetworkMode(network_text)
     identity_text = _optional_text(data.get("identity"))
-    identity = None if identity_text is None else IdentitySpec(IdentityMode(identity_text))
+    identity = None if identity_text is None else IdentityMode(identity_text)
 
     return Profile(
         name=name,
@@ -105,8 +101,6 @@ def read_profile(name: str, data: dict[str, Any]) -> Profile:
         container_args=_read_str_tuple(data, "container_arg", "container_args"),
         cpus=_optional_int(data.get("cpus")),
         memory=_optional_int(data.get("memory")),
-        storage=_optional_int(data.get("storage")),
-        overlay=_optional_int(data.get("overlay")),
     )
 
 
@@ -148,4 +142,6 @@ def _optional_int(value: Any) -> int | None:
         return None
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError("expected integer value")
+    if value <= 0:
+        raise ValueError("expected positive integer value")
     return value

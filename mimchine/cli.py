@@ -8,7 +8,7 @@ import typer
 
 from . import __VERSION__
 from .constants import APP_NAME
-from .domain import ExecSpec, IdentityMode, IdentitySpec, NetworkMode, ResourceSpec
+from .domain import ExecSpec, IdentityMode, NetworkMode
 from .gpu import inspect_gpu_host
 from .log import configure_logging, logger
 from .output import (
@@ -99,9 +99,7 @@ def build(
         "--build-arg",
         help="Build-time variable, KEY=VALUE. May be repeated.",
     ),
-    no_cache: bool = typer.Option(
-        False, "--no-cache", help="Do not use build cache."
-    ),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Do not use build cache."),
 ) -> None:
     _run(
         lambda: BuildService.default().build(
@@ -125,13 +123,13 @@ def create(
         None,
         "--image",
         "-i",
-        help="Image tag or .smolmachine path.",
+        help="OCI image.",
     ),
     runner: Optional[str] = typer.Option(
         None,
         "--runner",
         "-r",
-        help="Execution backend: podman, docker, or smolvm.",
+        help="Execution backend: podman or docker.",
     ),
     profile: Optional[str] = typer.Option(
         None, "--profile", "-P", help="Profile name."
@@ -181,16 +179,6 @@ def create(
     net: bool = typer.Option(False, "--net", help="Enable outbound networking."),
     no_net: bool = typer.Option(False, "--no-net", help="Disable outbound networking."),
     host_net: bool = typer.Option(False, "--host-net", help="Use host networking."),
-    allow_hosts: list[str] = typer.Option(
-        [],
-        "--allow-host",
-        help="Allow outbound traffic to hostname. May be repeated.",
-    ),
-    allow_cidrs: list[str] = typer.Option(
-        [],
-        "--allow-cidr",
-        help="Allow outbound traffic to CIDR. May be repeated.",
-    ),
     ssh_agent: bool = typer.Option(
         False, "--ssh-agent", help="Forward the host SSH agent."
     ),
@@ -204,12 +192,6 @@ def create(
     cpus: Optional[int] = typer.Option(None, "--cpus", "-c", min=1, help="vCPU count."),
     mem: Optional[int] = typer.Option(
         None, "--mem", "--memory", min=1, help="Memory MiB."
-    ),
-    storage: Optional[int] = typer.Option(
-        None, "--storage", min=1, help="Storage GiB."
-    ),
-    overlay: Optional[int] = typer.Option(
-        None, "--overlay", min=1, help="Overlay GiB."
     ),
     root: bool = typer.Option(False, "--root", help="Run as root."),
     host_user: bool = typer.Option(False, "--host-user", help="Run as the host user."),
@@ -245,16 +227,10 @@ def create(
                 workdir=workdir,
                 shell=shell,
                 network=_network_from_flags(net, no_net, host_net),
-                allow_hosts=tuple(allow_hosts),
-                allow_cidrs=tuple(allow_cidrs),
                 ssh_agent=_optional_bool_flag(ssh_agent, no_ssh_agent, "ssh-agent"),
                 gpu=_optional_bool_flag(gpu, no_gpu, "gpu"),
-                resources=ResourceSpec(
-                    cpus=cpus,
-                    memory_mib=mem,
-                    storage_gib=storage,
-                    overlay_gib=overlay,
-                ),
+                cpus=cpus,
+                memory_mib=mem,
                 identity=_identity_from_flags(root, host_user),
                 shell_state=shell_state,
                 container_args=tuple(container_args),
@@ -304,9 +280,6 @@ def exec_command(
         "-w",
         help="Working directory inside the machine.",
     ),
-    stream: bool = typer.Option(
-        False, "--stream", help="Stream output when supported."
-    ),
 ) -> None:
     guest_command = _guest_command(command)
     _run(
@@ -318,7 +291,6 @@ def exec_command(
                 tty=tty,
                 env=tuple(env),
                 workdir=workdir,
-                stream=stream,
             ),
         )
     )
@@ -440,30 +412,6 @@ def delete(
     )
 
 
-@app.command()
-def prune(
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be removed."),
-    force: bool = typer.Option(False, "--force", "-f", help="Do not ask for confirmation."),
-) -> None:
-    if not dry_run and not force and not typer.confirm("delete unused smolvm image data?"):
-        raise typer.Exit()
-
-    def action() -> None:
-        result = MachineService.default().prune(dry_run=dry_run)
-        size_label = "reclaimable" if dry_run else "reclaimed"
-        print_key_value_table(
-            "mimchine prune",
-            [
-                ("image_refs", str(result.image_refs)),
-                ("image_entries", str(result.image_entries)),
-                ("staging_entries", str(result.staging_entries)),
-                (size_label, _format_bytes(result.bytes_reclaimable)),
-            ],
-        )
-
-    _run(action)
-
-
 @app.command(name="list")
 def list_machines() -> None:
     _run(lambda: print_machine_list(MachineService.default().list()))
@@ -480,10 +428,9 @@ def inspect(name: str = typer.Argument(..., help="Machine name.")) -> None:
             [
                 ("name", record.name),
                 ("runner", record.runner),
-                ("backend_id", record.backend_id),
-                ("state", view.status.state.value),
-                ("image", record.image.display()),
-                ("network", record.network.mode.value),
+                ("state", view.state.value),
+                ("image", record.image),
+                ("network", record.network.value),
                 ("workdir", record.workdir or ""),
                 ("shell", record.shell or service.config.defaults.shell or "auto"),
                 ("gpu", "yes" if record.gpu else "no"),
@@ -550,24 +497,11 @@ def _optional_bool_flag(enabled: bool, disabled: bool, label: str) -> bool | Non
     return None
 
 
-def _identity_from_flags(root: bool, host_user: bool) -> IdentitySpec | None:
+def _identity_from_flags(root: bool, host_user: bool) -> IdentityMode | None:
     if root and host_user:
         raise ValueError("cannot use --root with --host-user")
     if root:
-        return IdentitySpec(IdentityMode.ROOT)
+        return IdentityMode.ROOT
     if host_user:
-        return IdentitySpec(IdentityMode.HOST)
+        return IdentityMode.HOST
     return None
-
-
-def _format_bytes(value: int) -> str:
-    units = ("B", "KiB", "MiB", "GiB")
-    amount = float(value)
-    unit = units[0]
-    for unit in units:
-        if amount < 1024 or unit == units[-1]:
-            break
-        amount /= 1024
-    if unit == "B":
-        return f"{int(amount)} {unit}"
-    return f"{amount:.1f} {unit}"

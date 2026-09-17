@@ -36,8 +36,6 @@ def test_config_accepts_resource_defaults(tmp_path: Path) -> None:
                 "[defaults]",
                 "cpus = 2",
                 "memory = 4096",
-                "storage = 16",
-                "overlay = 8",
             )
         ),
         encoding="utf-8",
@@ -47,8 +45,6 @@ def test_config_accepts_resource_defaults(tmp_path: Path) -> None:
 
     assert config.defaults.resources.cpus == 2
     assert config.defaults.resources.memory_mib == 4096
-    assert config.defaults.resources.storage_gib == 16
-    assert config.defaults.resources.overlay_gib == 8
 
 
 def test_load_config_rejects_unknown_top_level_table(tmp_path: Path) -> None:
@@ -72,7 +68,7 @@ def test_read_profile_normalizes_supported_fields() -> None:
         "work",
         {
             "image": "fedora:latest",
-            "runner": "smolvm",
+            "runner": "podman",
             "workspace": "./src",
             "home_shares": ["~/Dev"],
             "mounts": ["./cache:/cache:ro"],
@@ -89,13 +85,12 @@ def test_read_profile_normalizes_supported_fields() -> None:
     )
 
     assert profile.image == "fedora:latest"
-    assert profile.runner == "smolvm"
+    assert profile.runner == "podman"
     assert profile.workspaces == ("./src",)
     assert profile.home_shares == ("~/Dev",)
     assert profile.mounts == ("./cache:/cache:ro",)
     assert profile.network is NetworkMode.NONE
-    assert profile.identity is not None
-    assert profile.identity.mode is IdentityMode.HOST
+    assert profile.identity is IdentityMode.HOST
     assert profile.shell_state is False
     assert profile.ssh_agent is True
     assert profile.gpu is True
@@ -113,6 +108,10 @@ def test_read_profile_rejects_non_bool_gpu() -> None:
         read_profile("bad", {"image": "alpine", "gpu": "false"})
 
 
-def test_read_profile_rejects_non_int_resource() -> None:
-    with pytest.raises(ValueError, match="expected integer value"):
-        read_profile("bad", {"image": "alpine", "cpus": True})
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [(True, "expected integer value"), (0, "expected positive integer value")],
+)
+def test_read_profile_rejects_invalid_resource(value, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        read_profile("bad", {"image": "alpine", "cpus": value})

@@ -26,8 +26,8 @@ def print_machine_list(rows: list[MachineView]) -> None:
         table.add_row(
             view.record.name,
             view.record.runner,
-            view.status.state.value,
-            view.record.image.display(),
+            view.state.value,
+            view.record.image,
         )
 
     _stdout.print(table)

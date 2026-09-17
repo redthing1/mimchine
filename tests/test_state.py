@@ -4,14 +4,16 @@ from pathlib import Path
 
 import pytest
 
-from mimchine.domain import ImageSource, MachineRecord, MachineSpec
+from mimchine.domain import MachineRecord
 from mimchine.state import MachineNotFoundError, MachineStore
 
 
 def test_machine_store_saves_loads_lists_and_deletes(tmp_path: Path) -> None:
     store = MachineStore(tmp_path)
-    record = MachineRecord.from_spec(
-        MachineSpec("dev", ImageSource.oci_reference("alpine"), "podman"),
+    record = MachineRecord(
+        "dev",
+        "alpine",
+        "podman",
         created_at="2026-01-01T00:00:00+00:00",
     )
 
@@ -53,8 +55,10 @@ def test_machine_store_invalid_json_raises(tmp_path: Path) -> None:
 
 def test_machine_store_delete_removes_owned_directory(tmp_path: Path) -> None:
     store = MachineStore(tmp_path)
-    record = MachineRecord.from_spec(
-        MachineSpec("dev", ImageSource.oci_reference("alpine"), "podman"),
+    record = MachineRecord(
+        "dev",
+        "alpine",
+        "podman",
         created_at="2026-01-01T00:00:00+00:00",
     )
     store.save(record)

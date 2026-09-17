@@ -12,7 +12,7 @@ from .shells import normalize_shell
 
 
 SUPPORTED_BUILDERS = ("podman", "docker")
-SUPPORTED_RUNNERS = ("podman", "docker", "smolvm")
+SUPPORTED_RUNNERS = ("podman", "docker")
 SUPPORTED_TOP_LEVEL_TABLES = ("defaults", "profiles")
 SUPPORTED_DEFAULT_KEYS = (
     "builder",
@@ -21,8 +21,6 @@ SUPPORTED_DEFAULT_KEYS = (
     "shell",
     "cpus",
     "memory",
-    "storage",
-    "overlay",
 )
 
 
@@ -124,8 +122,6 @@ def _read_defaults(data: Any) -> Defaults:
         resources=ResourceSpec(
             cpus=_optional_int(data.get("cpus")),
             memory_mib=_optional_int(data.get("memory")),
-            storage_gib=_optional_int(data.get("storage")),
-            overlay_gib=_optional_int(data.get("overlay")),
         ),
     )
 

@@ -48,9 +48,7 @@ def test_inspect_gpu_host_discovers_render_nodes_and_nvidia_cdi(
     (dev / "nvidiactl").touch()
     cdi = tmp_path / "cdi"
     cdi.mkdir()
-    (cdi / "nvidia.yaml").write_text(
-        "kind: nvidia.com/gpu\ndevices:\n  - name: all\n"
-    )
+    (cdi / "nvidia.yaml").write_text("kind: nvidia.com/gpu\ndevices:\n  - name: all\n")
     monkeypatch.setattr("mimchine.gpu.platform.system", lambda: "Linux")
 
     host = inspect_gpu_host(dev_root=dev, cdi_dirs=(cdi,))

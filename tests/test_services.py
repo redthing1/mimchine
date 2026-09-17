@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -9,40 +9,14 @@ from mimchine.config import AppConfig, Defaults
 from mimchine.domain import (
     ExecSpec,
     IdentityMode,
-    IdentitySpec,
-    ImageSource,
-    ImageSourceKind,
     NetworkMode,
     ResourceSpec,
-    RunnerCapabilities,
     RuntimeState,
-    RuntimeStatus,
 )
 from mimchine.services import CreateOptions, MachineService
 from mimchine.shells import AUTO_ENTER_SHELL_COMMAND
 from mimchine.shell_state import ShellStateManager
-from mimchine.smolvm_images import MaterializeResult, PruneResult
 from mimchine.state import MachineStore
-
-
-CAPS = RunnerCapabilities(
-    image_sources=(
-        ImageSourceKind.OCI_REFERENCE,
-        ImageSourceKind.SMOLMACHINE,
-    ),
-    offline_oci_references=True,
-    directory_mounts=True,
-    file_mounts=True,
-    published_ports=True,
-    outbound_network=True,
-    restricted_network=True,
-    host_network=True,
-    ssh_agent=True,
-    gpu=True,
-    root_identity=True,
-    host_identity=True,
-    mount_options=True,
-)
 
 
 @pytest.fixture(autouse=True)
@@ -54,8 +28,9 @@ def clear_host_terminal_environment(monkeypatch) -> None:
 @dataclass
 class FakeRunner:
     name: str = "podman"
-    capabilities: RunnerCapabilities = CAPS
+    supports_gpu: bool = True
     state: RuntimeState = RuntimeState.STOPPED
+    start_state: RuntimeState = RuntimeState.RUNNING
     create_error: Exception | None = None
     delete_error: Exception | None = None
     created: list = field(default_factory=list)
@@ -70,7 +45,7 @@ class FakeRunner:
 
     def start(self, record):
         self.started.append(record)
-        self.state = RuntimeState.RUNNING
+        self.state = self.start_state
 
     def stop(self, record):
         self.state = RuntimeState.STOPPED
@@ -84,7 +59,7 @@ class FakeRunner:
         self.execs.append((record, spec))
 
     def inspect(self, record):
-        return RuntimeStatus(record.name, record.runner, record.backend_id, self.state)
+        return self.state
 
 
 def test_create_merges_profile_and_cli_into_record(tmp_path: Path) -> None:
@@ -120,9 +95,9 @@ def test_create_merges_profile_and_cli_into_record(tmp_path: Path) -> None:
 
     assert runner.created == [record]
     assert service.store.load("dev") == record
-    assert record.image.value == "fedora:latest"
-    assert record.network.mode is NetworkMode.NONE
-    assert record.identity.mode is IdentityMode.HOST
+    assert record.image == "fedora:latest"
+    assert record.network is NetworkMode.NONE
+    assert record.identity is IdentityMode.HOST
     assert record.env == ("PROFILE=1", "CLI=1")
     assert record.container_args == (
         "--device=vendor.example/gpu=all",
@@ -132,6 +107,20 @@ def test_create_merges_profile_and_cli_into_record(tmp_path: Path) -> None:
     assert record.shell == "bash -l"
 
 
+def test_explicit_empty_image_does_not_fall_back_to_profile(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    service = _service(
+        tmp_path,
+        runner,
+        profiles={"dev": {"image": "alpine"}},
+    )
+
+    with pytest.raises(ValueError, match="image cannot be empty"):
+        service.create(CreateOptions(name="dev", image=" ", profile="dev"))
+
+    assert runner.created == []
+
+
 def test_create_merges_resource_defaults_profile_and_cli(tmp_path: Path) -> None:
     runner = FakeRunner()
     config = AppConfig(
@@ -139,8 +128,6 @@ def test_create_merges_resource_defaults_profile_and_cli(tmp_path: Path) -> None
             resources=ResourceSpec(
                 cpus=2,
                 memory_mib=4096,
-                storage_gib=16,
-                overlay_gib=8,
             )
         ),
         profiles={
@@ -162,14 +149,12 @@ def test_create_merges_resource_defaults_profile_and_cli(tmp_path: Path) -> None
         CreateOptions(
             name="dev",
             profile="vm",
-            resources=ResourceSpec(cpus=6),
+            cpus=6,
         )
     )
 
     assert record.resources.cpus == 6
     assert record.resources.memory_mib == 8192
-    assert record.resources.storage_gib == 16
-    assert record.resources.overlay_gib == 8
 
 
 def test_create_can_start_machine(tmp_path: Path) -> None:
@@ -181,6 +166,15 @@ def test_create_can_start_machine(tmp_path: Path) -> None:
     assert runner.created == [record]
     assert runner.started == [record]
     assert runner.state is RuntimeState.RUNNING
+
+
+def test_start_rejects_machine_that_remains_stopped(tmp_path: Path) -> None:
+    runner = FakeRunner(start_state=RuntimeState.STOPPED)
+    service = _service(tmp_path, runner)
+    service.create(CreateOptions(name="dev", image="alpine"))
+
+    with pytest.raises(ValueError, match="failed to start; state is stopped"):
+        service.start("dev")
 
 
 def test_profile_can_disable_shell_state(tmp_path: Path) -> None:
@@ -201,7 +195,7 @@ def test_profile_can_disable_shell_state(tmp_path: Path) -> None:
 
     record = service.create(CreateOptions(name="box", profile="isolated"))
 
-    assert record.shell_state.enabled is False
+    assert record.shell_state is False
     assert [mount.kind for mount in record.mounts] == ["workspace"]
     assert not (tmp_path / "shell-state" / "box").exists()
 
@@ -223,7 +217,7 @@ def test_cli_can_enable_shell_state_over_profile(tmp_path: Path) -> None:
         CreateOptions(name="box", profile="isolated", shell_state=True)
     )
 
-    assert record.shell_state.enabled is True
+    assert record.shell_state is True
     assert [mount.kind for mount in record.mounts] == ["shell_state"]
     assert (tmp_path / "shell-state" / "box").exists()
 
@@ -421,7 +415,6 @@ def test_ssh_session_runs_original_command_with_protocol_stdio(tmp_path: Path) -
     )
     assert spec.interactive is True
     assert spec.tty is False
-    assert spec.stream is True
     assert spec.env == (
         "MIM_MACHINE=dev",
         "MIM_RUNNER=podman",
@@ -478,49 +471,16 @@ def test_ssh_session_enters_configured_shell_with_pty_and_term(tmp_path: Path) -
     assert spec.command[-2:] == ("zsh", "-l")
     assert spec.interactive is True
     assert spec.tty is True
-    assert spec.stream is True
     assert spec.env[-1] == "TERM=xterm-256color"
 
 
-def test_exec_rejects_missing_backend_with_clear_error(tmp_path: Path) -> None:
+def test_exec_rejects_missing_machine_with_clear_error(tmp_path: Path) -> None:
     runner = FakeRunner(state=RuntimeState.MISSING)
     service = _service(tmp_path, runner)
     service.create(CreateOptions(name="dev", image="alpine"))
 
-    with pytest.raises(ValueError, match="backend \\[dev\\] is missing"):
+    with pytest.raises(ValueError, match="machine \\[dev\\] is missing"):
         service.exec("dev", ExecSpec(("echo", "hello")))
-
-
-def test_rejects_runner_unsupported_file_mount(tmp_path: Path) -> None:
-    file_path = tmp_path / "config"
-    file_path.write_text("x", encoding="utf-8")
-    caps = RunnerCapabilities(
-        image_sources=(
-            ImageSourceKind.OCI_REFERENCE,
-            ImageSourceKind.SMOLMACHINE,
-        ),
-        offline_oci_references=True,
-        directory_mounts=True,
-        file_mounts=False,
-        published_ports=True,
-        outbound_network=True,
-        restricted_network=True,
-        host_network=True,
-        ssh_agent=True,
-        gpu=True,
-        root_identity=True,
-        host_identity=True,
-    )
-    service = _service(tmp_path, FakeRunner(capabilities=caps))
-
-    with pytest.raises(ValueError, match="file mounts"):
-        service.create(
-            CreateOptions(
-                name="dev",
-                image="alpine",
-                mounts=(f"{file_path}:/config:ro",),
-            )
-        )
 
 
 def test_rejects_port_publishing_with_host_network(tmp_path: Path) -> None:
@@ -537,255 +497,14 @@ def test_rejects_port_publishing_with_host_network(tmp_path: Path) -> None:
         )
 
 
-def test_rejects_unsupported_host_network_before_port_interaction(tmp_path: Path) -> None:
-    runner = FakeRunner(name="smolvm", capabilities=replace(CAPS, host_network=False))
-    service = MachineService(
-        AppConfig(defaults=Defaults(runner="smolvm"), profiles={}),
-        MachineStore(tmp_path / "machines"),
-        ShellStateManager(tmp_path / "shell-state"),
-        {"smolvm": runner},
+def test_rejects_gpu_on_unsupported_runner(tmp_path: Path) -> None:
+    service = _service(
+        tmp_path,
+        FakeRunner(name="docker", supports_gpu=False),
     )
 
-    with pytest.raises(
-        ValueError,
-        match="runner \\[smolvm\\] does not support host networking",
-    ):
-        service.create(
-            CreateOptions(
-                name="dev",
-                image="alpine",
-                network=NetworkMode.HOST,
-                ports=("18812:18812",),
-            )
-        )
-
-
-def test_rejects_mount_options_for_non_container_runner(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    runner = FakeRunner(name="smolvm", capabilities=replace(CAPS, mount_options=False))
-    service = MachineService(
-        AppConfig(defaults=Defaults(runner="smolvm"), profiles={}),
-        MachineStore(tmp_path / "machines"),
-        ShellStateManager(tmp_path / "shell-state"),
-        {"smolvm": runner},
-    )
-
-    with pytest.raises(ValueError, match="mount options"):
-        service.create(
-            CreateOptions(
-                name="dev",
-                image="alpine",
-                workspaces=(f"{workspace}:rw,z",),
-            )
-        )
-
-
-def test_rejects_runner_unsupported_image_source(tmp_path: Path) -> None:
-    caps = RunnerCapabilities(
-        image_sources=(ImageSourceKind.OCI_REFERENCE,),
-        offline_oci_references=True,
-        directory_mounts=True,
-        file_mounts=True,
-        published_ports=True,
-        outbound_network=True,
-        restricted_network=True,
-        host_network=True,
-        ssh_agent=True,
-        gpu=True,
-        root_identity=True,
-        host_identity=True,
-    )
-    service = _service(tmp_path, FakeRunner(capabilities=caps))
-
-    with pytest.raises(ValueError, match="image source"):
-        service.create(
-            CreateOptions(
-                name="dev",
-                image=str(tmp_path / "tool.smolmachine"),
-            )
-        )
-
-    assert not (tmp_path / "shell-state" / "dev").exists()
-
-
-def test_rejects_missing_smolmachine_file(tmp_path: Path) -> None:
-    runner = FakeRunner()
-    service = _service(tmp_path, runner)
-
-    with pytest.raises(ValueError, match="\\.smolmachine file does not exist"):
-        service.create(
-            CreateOptions(
-                name="dev",
-                image=str(tmp_path / "tool.smolmachine"),
-            )
-        )
-
-    assert runner.created == []
-    assert not (tmp_path / "shell-state" / "dev").exists()
-
-
-def test_rejects_offline_oci_reference_when_runner_requires_network(
-    tmp_path: Path,
-) -> None:
-    caps = RunnerCapabilities(
-        image_sources=(ImageSourceKind.OCI_REFERENCE,),
-        offline_oci_references=False,
-        directory_mounts=True,
-        file_mounts=True,
-        published_ports=True,
-        outbound_network=True,
-        restricted_network=True,
-        host_network=True,
-        ssh_agent=True,
-        gpu=True,
-        root_identity=True,
-        host_identity=True,
-    )
-    runner = FakeRunner(name="smolvm", capabilities=caps)
-    service = MachineService(
-        AppConfig(defaults=Defaults(runner="smolvm"), profiles={}),
-        MachineStore(tmp_path / "machines"),
-        ShellStateManager(tmp_path / "shell-state"),
-        {"smolvm": runner},
-    )
-
-    with pytest.raises(ValueError, match="needs networking to start OCI references"):
-        service.create(
-            CreateOptions(
-                name="dev",
-                image="alpine",
-                network=NetworkMode.NONE,
-            )
-        )
-
-    assert runner.created == []
-    assert not (tmp_path / "shell-state" / "dev").exists()
-
-
-def test_imported_smolvm_image_can_be_created_without_network(tmp_path: Path) -> None:
-    caps = RunnerCapabilities(
-        image_sources=(
-            ImageSourceKind.OCI_REFERENCE,
-            ImageSourceKind.SMOLMACHINE,
-        ),
-        offline_oci_references=True,
-        directory_mounts=True,
-        file_mounts=True,
-        published_ports=True,
-        outbound_network=True,
-        restricted_network=True,
-        host_network=True,
-        ssh_agent=True,
-        gpu=True,
-        root_identity=True,
-        host_identity=True,
-    )
-    runner = FakeRunner(name="smolvm", capabilities=caps)
-    images = FakeSmolvmImages()
-    service = MachineService(
-        AppConfig(defaults=Defaults(builder="podman", runner="smolvm"), profiles={}),
-        MachineStore(tmp_path / "machines"),
-        ShellStateManager(tmp_path / "shell-state"),
-        {"smolvm": runner},
-        smolvm_images=images,
-    )
-
-    record = service.create(
-        CreateOptions(
-            name="dev",
-            image="example-dev:latest",
-            network=NetworkMode.NONE,
-        )
-    )
-
-    assert images.materialized == [("example-dev:latest", "podman")]
-    assert record.image.kind is ImageSourceKind.OCI_REFERENCE
-    assert record.image.value == "example-dev:latest"
-    assert runner.created == [record]
-
-
-def test_rejects_smolvm_offline_oci_reference_when_image_is_not_local(
-    tmp_path: Path,
-) -> None:
-    runner = FakeRunner(name="smolvm", capabilities=replace(CAPS, host_network=False))
-    images = FakeSmolvmImages(MaterializeResult.NOT_LOCAL)
-    service = MachineService(
-        AppConfig(defaults=Defaults(builder="podman", runner="smolvm"), profiles={}),
-        MachineStore(tmp_path / "machines"),
-        ShellStateManager(tmp_path / "shell-state"),
-        {"smolvm": runner},
-        smolvm_images=images,
-    )
-
-    with pytest.raises(ValueError, match="cannot create offline OCI machine"):
-        service.create(
-            CreateOptions(
-                name="dev",
-                image="ghcr.io/org/app:latest",
-                network=NetworkMode.NONE,
-            )
-        )
-
-    assert images.materialized == [("ghcr.io/org/app:latest", "podman")]
-    assert runner.created == []
-
-
-def test_rejects_runner_unsupported_root_identity(tmp_path: Path) -> None:
-    caps = RunnerCapabilities(
-        image_sources=(ImageSourceKind.OCI_REFERENCE,),
-        offline_oci_references=True,
-        directory_mounts=True,
-        file_mounts=True,
-        published_ports=True,
-        outbound_network=True,
-        restricted_network=True,
-        host_network=True,
-        ssh_agent=True,
-        gpu=True,
-        root_identity=False,
-        host_identity=True,
-    )
-    runner = FakeRunner(name="smolvm", capabilities=caps)
-    service = MachineService(
-        AppConfig(defaults=Defaults(runner="smolvm"), profiles={}),
-        MachineStore(tmp_path / "machines"),
-        ShellStateManager(tmp_path / "shell-state"),
-        {"smolvm": runner},
-    )
-
-    with pytest.raises(ValueError, match="does not support root identity"):
-        service.create(
-            CreateOptions(
-                name="dev",
-                image="alpine",
-                identity=IdentitySpec(IdentityMode.ROOT),
-            )
-        )
-
-    assert runner.created == []
-
-
-def test_prune_delegates_to_smolvm_images(tmp_path: Path) -> None:
-    images = FakeSmolvmImages()
-    service = MachineService(
-        AppConfig(defaults=Defaults(), profiles={}),
-        MachineStore(tmp_path / "machines"),
-        ShellStateManager(tmp_path / "shell-state"),
-        {"podman": FakeRunner()},
-        smolvm_images=images,
-    )
-
-    result = service.prune(dry_run=True)
-
-    assert result == PruneResult(
-        image_refs=0,
-        image_entries=0,
-        staging_entries=0,
-        bytes_reclaimable=0,
-        dry_run=True,
-    )
-    assert images.pruned == [True]
+    with pytest.raises(ValueError, match="does not support GPU forwarding"):
+        service.create(CreateOptions(name="dev", image="alpine", gpu=True))
 
 
 def test_delete_can_preserve_shell_state(tmp_path: Path) -> None:
@@ -879,30 +598,18 @@ def test_save_failure_cleanup_error_does_not_mask_save_error(tmp_path: Path) -> 
 
 
 def _service(tmp_path: Path, runner: FakeRunner, profiles=None) -> MachineService:
-    config = AppConfig(defaults=Defaults(), profiles=profiles or {})
+    config = AppConfig(
+        defaults=Defaults(runner=runner.name),
+        profiles=profiles or {},
+    )
     return MachineService(
         config,
         MachineStore(tmp_path / "machines"),
         ShellStateManager(tmp_path / "shell-state"),
-        {"podman": runner},
+        {runner.name: runner},
     )
 
 
 class FailingStore(MachineStore):
     def save(self, record) -> None:
         raise RuntimeError("save failed")
-
-
-class FakeSmolvmImages:
-    def __init__(self, result: MaterializeResult = MaterializeResult.IMPORTED):
-        self.result = result
-        self.materialized: list[tuple[str, str]] = []
-        self.pruned: list[bool] = []
-
-    def materialize(self, image: ImageSource, *, builder: str) -> MaterializeResult:
-        self.materialized.append((image.value, builder))
-        return self.result
-
-    def prune(self, *, dry_run: bool) -> PruneResult:
-        self.pruned.append(dry_run)
-        return PruneResult(0, 0, 0, 0, dry_run)

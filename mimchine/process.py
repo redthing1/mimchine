@@ -17,7 +17,9 @@ class ProcessResult:
 class ProcessError(RuntimeError):
     def __init__(self, result: ProcessResult):
         self.result = result
-        super().__init__(f"command failed with exit code {result.returncode}: {result.args[0]}")
+        super().__init__(
+            f"command failed with exit code {result.returncode}: {result.args[0]}"
+        )
 
 
 class ProcessRunner:

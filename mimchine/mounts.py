@@ -85,7 +85,9 @@ def parse_home_share_spec(
     return tuple(mounts)
 
 
-def map_host_path_to_guest(host_path: Path, mounts: tuple[MountSpec, ...]) -> str | None:
+def map_host_path_to_guest(
+    host_path: Path, mounts: tuple[MountSpec, ...]
+) -> str | None:
     resolved_host_path = Path(os.path.expanduser(str(host_path))).resolve()
     best: MountSpec | None = None
 

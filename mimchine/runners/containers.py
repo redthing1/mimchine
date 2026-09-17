@@ -2,19 +2,16 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from .lifecycle import KEEPALIVE_COMMAND
 from ..domain import (
     ExecSpec,
     IdentityMode,
-    ImageSourceKind,
     MachineRecord,
     MountSpec,
     NetworkMode,
-    RunnerCapabilities,
     RuntimeState,
-    RuntimeStatus,
 )
 from ..process import ProcessError, ProcessRunner
 from ..gpu import podman_gpu_args
@@ -32,24 +29,7 @@ class ImageIdentity:
 class _ContainerRunner:
     name: str
     binary: str
-
-    capabilities = RunnerCapabilities(
-        image_sources=(
-            ImageSourceKind.OCI_REFERENCE,
-        ),
-        offline_oci_references=True,
-        directory_mounts=True,
-        file_mounts=True,
-        published_ports=True,
-        outbound_network=True,
-        restricted_network=False,
-        host_network=True,
-        ssh_agent=True,
-        gpu=False,
-        root_identity=True,
-        host_identity=True,
-        mount_options=True,
-    )
+    supports_gpu = False
 
     def __init__(self, runner: ProcessRunner):
         self.runner = runner
@@ -59,12 +39,16 @@ class _ContainerRunner:
             self.binary,
             "create",
             "--name",
-            record.backend_id,
+            record.name,
             "--label",
             "mimchine=1",
         ]
         args.extend(self._identity_args(record))
         args.extend(self._network_args(record))
+        if record.resources.cpus:
+            args.extend(("--cpus", str(record.resources.cpus)))
+        if record.resources.memory_mib:
+            args.extend(("--memory", f"{record.resources.memory_mib}m"))
         for env in record.env:
             args.extend(["-e", env])
         if record.workdir:
@@ -78,12 +62,12 @@ class _ContainerRunner:
         if record.gpu:
             args.extend(self._gpu_args())
         args.extend(record.container_args)
-        args.extend([record.image.value, "sh", "-lc", KEEPALIVE_COMMAND])
+        args.extend([record.image, "sh", "-lc", KEEPALIVE_COMMAND])
         self.runner.run(args, foreground=True, discard_stdout=True)
 
     def start(self, record: MachineRecord) -> None:
         self.runner.run(
-            [self.binary, "start", record.backend_id],
+            [self.binary, "start", record.name],
             foreground=True,
             discard_stdout=True,
             cwd=NEUTRAL_BACKEND_CWD,
@@ -91,7 +75,7 @@ class _ContainerRunner:
 
     def stop(self, record: MachineRecord) -> None:
         self.runner.run(
-            [self.binary, "stop", record.backend_id],
+            [self.binary, "stop", record.name],
             foreground=True,
             discard_stdout=True,
             cwd=NEUTRAL_BACKEND_CWD,
@@ -99,7 +83,7 @@ class _ContainerRunner:
 
     def delete(self, record: MachineRecord) -> None:
         self.runner.run(
-            [self.binary, "rm", "-f", record.backend_id],
+            [self.binary, "rm", "-f", record.name],
             foreground=True,
             discard_stdout=True,
             check=False,
@@ -116,13 +100,13 @@ class _ContainerRunner:
             args.extend(["-e", env])
         if spec.workdir:
             args.extend(["-w", spec.workdir])
-        args.append(record.backend_id)
+        args.append(record.name)
         args.extend(spec.command)
         self.runner.run(args, foreground=True, cwd=NEUTRAL_BACKEND_CWD)
 
-    def inspect(self, record: MachineRecord) -> RuntimeStatus:
+    def inspect(self, record: MachineRecord) -> RuntimeState:
         result = self.runner.run(
-            self._inspect_args(record.backend_id),
+            self._inspect_args(record.name),
             capture=True,
             check=False,
             cwd=NEUTRAL_BACKEND_CWD,
@@ -130,29 +114,23 @@ class _ContainerRunner:
         if result.returncode == 127:
             raise ProcessError(result)
         if result.returncode != 0:
-            return RuntimeStatus(
-                record.name,
-                record.runner,
-                record.backend_id,
-                RuntimeState.MISSING,
-                result.stderr.strip(),
-            )
+            return RuntimeState.MISSING
 
         data = _parse_json_documents(result.stdout)
         state = _container_state(data[0]) if data else RuntimeState.UNKNOWN
-        return RuntimeStatus(record.name, record.runner, record.backend_id, state)
+        return state
 
     def _network_args(self, record: MachineRecord) -> list[str]:
-        if record.network.mode is NetworkMode.NONE:
+        if record.network is NetworkMode.NONE:
             return ["--network", "none"]
-        if record.network.mode is NetworkMode.HOST:
+        if record.network is NetworkMode.HOST:
             return ["--network", "host"]
         return []
 
     def _identity_args(self, record: MachineRecord) -> list[str]:
-        if record.identity.mode is IdentityMode.ROOT:
+        if record.identity is IdentityMode.ROOT:
             return ["--user", "0:0"]
-        if record.identity.mode is IdentityMode.HOST:
+        if record.identity is IdentityMode.HOST:
             return self._host_identity_args()
         return self._image_identity_args(record)
 
@@ -177,27 +155,27 @@ class _ContainerRunner:
     def _gpu_args(self) -> tuple[str, ...]:
         raise ValueError(f"runner [{self.name}] does not support GPU forwarding")
 
-    def _inspect_args(self, backend_id: str) -> list[str]:
-        return [self.binary, "inspect", backend_id]
+    def _inspect_args(self, name: str) -> list[str]:
+        return [self.binary, "inspect", name]
 
 
 class PodmanRunner(_ContainerRunner):
     name = "podman"
     binary = "podman"
-    capabilities = replace(_ContainerRunner.capabilities, gpu=True)
+    supports_gpu = True
 
     def _gpu_args(self) -> tuple[str, ...]:
         return podman_gpu_args()
 
     def _image_identity_args(self, record: MachineRecord) -> list[str]:
-        identity = self._resolve_image_identity(record.image.value)
+        identity = self._resolve_image_identity(record.image)
         return ["--userns", f"keep-id:uid={identity.uid},gid={identity.gid}"]
 
     def _host_identity_args(self) -> list[str]:
         return ["--userns", "keep-id"]
 
-    def _inspect_args(self, backend_id: str) -> list[str]:
-        return [self.binary, "inspect", "--format", "json", backend_id]
+    def _inspect_args(self, name: str) -> list[str]:
+        return [self.binary, "inspect", "--format", "json", name]
 
     def _resolve_image_identity(self, image: str) -> ImageIdentity:
         result = self.runner.run(

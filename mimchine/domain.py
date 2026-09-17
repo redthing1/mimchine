@@ -8,51 +8,11 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MACHINE_NAME_PATTERN = re.compile(
     r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?"
     r"(?:\.[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)*"
 )
-
-
-class ImageSourceKind(Enum):
-    OCI_REFERENCE = "oci_reference"
-    SMOLMACHINE = "smolmachine"
-
-
-@dataclass(frozen=True)
-class ImageSource:
-    kind: ImageSourceKind
-    value: str
-
-    @classmethod
-    def oci_reference(cls, value: str) -> "ImageSource":
-        return cls(ImageSourceKind.OCI_REFERENCE, _require_text(value, "image"))
-
-    @classmethod
-    def smolmachine(cls, path: str | Path) -> "ImageSource":
-        return cls(ImageSourceKind.SMOLMACHINE, str(_normalize_path(path)))
-
-    @classmethod
-    def from_cli(cls, value: str) -> "ImageSource":
-        text = _require_text(value, "image")
-        expanded = Path(os.path.expanduser(text))
-        if text.endswith(".smolmachine"):
-            return cls.smolmachine(expanded)
-        return cls.oci_reference(text)
-
-    def display(self) -> str:
-        return self.value
-
-    def to_data(self) -> dict[str, Any]:
-        return {"kind": self.kind.value, "value": self.value}
-
-    @classmethod
-    def from_data(cls, data: dict[str, Any]) -> "ImageSource":
-        return cls(
-            kind=ImageSourceKind(str(data["kind"])),
-            value=str(data["value"]),
-        )
 
 
 @dataclass(frozen=True)
@@ -60,14 +20,12 @@ class BuildSpec:
     image: str
     file: Path
     context: Path
-    builder: str
     platform: str | None = None
     build_args: tuple[str, ...] = ()
     no_cache: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "image", _require_text(self.image, "image"))
-        object.__setattr__(self, "builder", _require_text(self.builder, "builder"))
         object.__setattr__(self, "file", _normalize_path(self.file))
         object.__setattr__(self, "context", _normalize_path(self.context))
         object.__setattr__(self, "build_args", tuple(self.build_args))
@@ -79,54 +37,10 @@ class NetworkMode(Enum):
     HOST = "host"
 
 
-@dataclass(frozen=True)
-class NetworkSpec:
-    mode: NetworkMode = NetworkMode.DEFAULT
-    allow_hosts: tuple[str, ...] = ()
-    allow_cidrs: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "mode", _enum(NetworkMode, self.mode))
-        object.__setattr__(self, "allow_hosts", tuple(self.allow_hosts))
-        object.__setattr__(self, "allow_cidrs", tuple(self.allow_cidrs))
-        if self.mode is NetworkMode.NONE and (self.allow_hosts or self.allow_cidrs):
-            raise ValueError("restricted network rules cannot be combined with no network")
-
-    def to_data(self) -> dict[str, Any]:
-        return {
-            "mode": self.mode.value,
-            "allow_hosts": list(self.allow_hosts),
-            "allow_cidrs": list(self.allow_cidrs),
-        }
-
-    @classmethod
-    def from_data(cls, data: dict[str, Any]) -> "NetworkSpec":
-        return cls(
-            mode=NetworkMode(str(data.get("mode", NetworkMode.DEFAULT.value))),
-            allow_hosts=tuple(str(x) for x in data.get("allow_hosts", [])),
-            allow_cidrs=tuple(str(x) for x in data.get("allow_cidrs", [])),
-        )
-
-
 class IdentityMode(Enum):
     IMAGE = "image"
     ROOT = "root"
     HOST = "host"
-
-
-@dataclass(frozen=True)
-class IdentitySpec:
-    mode: IdentityMode = IdentityMode.IMAGE
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "mode", _enum(IdentityMode, self.mode))
-
-    def to_data(self) -> dict[str, Any]:
-        return {"mode": self.mode.value}
-
-    @classmethod
-    def from_data(cls, data: dict[str, Any]) -> "IdentitySpec":
-        return cls(mode=IdentityMode(str(data.get("mode", IdentityMode.IMAGE.value))))
 
 
 @dataclass(frozen=True)
@@ -144,7 +58,9 @@ class MountSpec:
             raise ValueError(f"mount target must be absolute: {target}")
         object.__setattr__(self, "target", target)
         object.__setattr__(self, "kind", _require_text(self.kind, "mount kind"))
-        options = tuple(_require_text(option, "mount option") for option in self.options)
+        options = tuple(
+            _require_text(option, "mount option") for option in self.options
+        )
         for option in options:
             if ":" in option or "," in option:
                 raise ValueError(f"mount option cannot contain ':' or ',': {option}")
@@ -194,6 +110,13 @@ class PortBind:
     def arg(self) -> str:
         return f"{self.host}:{self.guest}"
 
+    @classmethod
+    def parse(cls, value: str) -> "PortBind":
+        parts = value.strip().split(":")
+        if len(parts) != 2 or any(part == "" for part in parts):
+            raise ValueError(f"invalid port mapping: {value}")
+        return cls(host=int(parts[0]), guest=int(parts[1]))
+
     def to_data(self) -> dict[str, int]:
         return {"host": self.host, "guest": self.guest}
 
@@ -209,11 +132,9 @@ class PortBind:
 class ResourceSpec:
     cpus: int | None = None
     memory_mib: int | None = None
-    storage_gib: int | None = None
-    overlay_gib: int | None = None
 
     def __post_init__(self) -> None:
-        for field_name in ("cpus", "memory_mib", "storage_gib", "overlay_gib"):
+        for field_name in ("cpus", "memory_mib"):
             value = getattr(self, field_name)
             if value is None:
                 continue
@@ -226,8 +147,6 @@ class ResourceSpec:
         return {
             "cpus": self.cpus,
             "memory_mib": self.memory_mib,
-            "storage_gib": self.storage_gib,
-            "overlay_gib": self.overlay_gib,
         }
 
     @classmethod
@@ -235,132 +154,62 @@ class ResourceSpec:
         return cls(
             cpus=_optional_int(data.get("cpus")),
             memory_mib=_optional_int(data.get("memory_mib")),
-            storage_gib=_optional_int(data.get("storage_gib")),
-            overlay_gib=_optional_int(data.get("overlay_gib")),
         )
 
 
 @dataclass(frozen=True)
-class ShellStateSpec:
-    enabled: bool = True
-
-    def __post_init__(self) -> None:
-        _validate_bool(self.enabled, "shell_state.enabled")
-
-    def to_data(self) -> dict[str, bool]:
-        return {"enabled": self.enabled}
-
-    @classmethod
-    def from_data(cls, data: dict[str, Any]) -> "ShellStateSpec":
-        return cls(enabled=_bool_from_data(data.get("enabled", True), "enabled"))
-
-
-@dataclass(frozen=True)
-class MachineSpec:
+class MachineRecord:
     name: str
-    image: ImageSource
+    image: str
     runner: str
+    created_at: str
     mounts: tuple[MountSpec, ...] = ()
     ports: tuple[PortBind, ...] = ()
     env: tuple[str, ...] = ()
     workdir: str | None = None
     shell: str | None = None
-    network: NetworkSpec = field(default_factory=NetworkSpec)
-    identity: IdentitySpec = field(default_factory=IdentitySpec)
+    network: NetworkMode = NetworkMode.DEFAULT
+    identity: IdentityMode = IdentityMode.IMAGE
     resources: ResourceSpec = field(default_factory=ResourceSpec)
-    shell_state: ShellStateSpec = field(default_factory=ShellStateSpec)
+    shell_state: bool = True
     ssh_agent: bool = False
     gpu: bool = False
     container_args: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        validate_machine_name(self.name)
+        object.__setattr__(self, "name", validate_machine_name(self.name))
+        object.__setattr__(self, "image", _require_text(self.image, "image"))
         object.__setattr__(self, "runner", _require_text(self.runner, "runner"))
+        object.__setattr__(
+            self, "created_at", _require_text(self.created_at, "created at")
+        )
         object.__setattr__(self, "mounts", tuple(self.mounts))
         object.__setattr__(self, "ports", tuple(self.ports))
-        object.__setattr__(self, "env", tuple(self.env))
+        object.__setattr__(self, "env", tuple(_parse_env(value) for value in self.env))
+        object.__setattr__(self, "network", _enum(NetworkMode, self.network))
+        object.__setattr__(self, "identity", _enum(IdentityMode, self.identity))
         object.__setattr__(
             self, "container_args", tuple(str(x) for x in self.container_args)
         )
         _validate_bool(self.ssh_agent, "ssh_agent")
         _validate_bool(self.gpu, "gpu")
-
-
-@dataclass(frozen=True)
-class MachineRecord:
-    schema_version: int
-    name: str
-    runner: str
-    backend_id: str
-    image: ImageSource
-    mounts: tuple[MountSpec, ...]
-    ports: tuple[PortBind, ...]
-    env: tuple[str, ...]
-    workdir: str | None
-    shell: str | None
-    network: NetworkSpec
-    identity: IdentitySpec
-    resources: ResourceSpec
-    shell_state: ShellStateSpec
-    ssh_agent: bool
-    gpu: bool
-    container_args: tuple[str, ...]
-    created_at: str
-
-    @classmethod
-    def from_spec(cls, spec: MachineSpec, *, created_at: str) -> "MachineRecord":
-        return cls(
-            schema_version=SCHEMA_VERSION,
-            name=spec.name,
-            runner=spec.runner,
-            backend_id=spec.name,
-            image=spec.image,
-            mounts=spec.mounts,
-            ports=spec.ports,
-            env=spec.env,
-            workdir=spec.workdir,
-            shell=spec.shell,
-            network=spec.network,
-            identity=spec.identity,
-            resources=spec.resources,
-            shell_state=spec.shell_state,
-            ssh_agent=spec.ssh_agent,
-            gpu=spec.gpu,
-            container_args=spec.container_args,
-            created_at=created_at,
-        )
-
-    def __post_init__(self) -> None:
-        if self.schema_version != SCHEMA_VERSION:
-            raise ValueError(f"unsupported machine record schema: {self.schema_version}")
-        validate_machine_name(self.name)
-        object.__setattr__(self, "runner", _require_text(self.runner, "runner"))
-        object.__setattr__(
-            self, "backend_id", _require_text(self.backend_id, "backend id")
-        )
-        object.__setattr__(self, "mounts", tuple(self.mounts))
-        object.__setattr__(self, "ports", tuple(self.ports))
-        object.__setattr__(self, "env", tuple(self.env))
-        object.__setattr__(
-            self, "container_args", tuple(str(x) for x in self.container_args)
-        )
+        _validate_bool(self.shell_state, "shell_state")
 
     def to_data(self) -> dict[str, Any]:
         return {
-            "schema_version": self.schema_version,
+            "schema_version": SCHEMA_VERSION,
             "name": self.name,
             "runner": self.runner,
-            "backend_id": self.backend_id,
-            "image": self.image.to_data(),
+            "image": self.image,
             "mounts": [m.to_data() for m in self.mounts],
             "ports": [p.to_data() for p in self.ports],
             "env": list(self.env),
             "workdir": self.workdir,
             "shell": self.shell,
-            "network": self.network.to_data(),
-            "identity": self.identity.to_data(),
+            "network": self.network.value,
+            "identity": self.identity.value,
             "resources": self.resources.to_data(),
-            "shell_state": self.shell_state.to_data(),
+            "shell_state": self.shell_state,
             "ssh_agent": self.ssh_agent,
             "gpu": self.gpu,
             "container_args": list(self.container_args),
@@ -369,25 +218,26 @@ class MachineRecord:
 
     @classmethod
     def from_data(cls, data: dict[str, Any]) -> "MachineRecord":
+        schema_version = _int_from_data(data["schema_version"], "schema_version")
+        if schema_version != SCHEMA_VERSION:
+            raise ValueError(f"unsupported machine record schema: {schema_version}")
         return cls(
-            schema_version=_int_from_data(data["schema_version"], "schema_version"),
             name=str(data["name"]),
+            image=str(data["image"]),
             runner=str(data["runner"]),
-            backend_id=str(data["backend_id"]),
-            image=ImageSource.from_data(dict(data["image"])),
+            created_at=str(data["created_at"]),
             mounts=tuple(MountSpec.from_data(dict(x)) for x in data.get("mounts", [])),
             ports=tuple(PortBind.from_data(dict(x)) for x in data.get("ports", [])),
             env=tuple(str(x) for x in data.get("env", [])),
             workdir=data.get("workdir"),
             shell=data.get("shell"),
-            network=NetworkSpec.from_data(dict(data.get("network", {}))),
-            identity=IdentitySpec.from_data(dict(data.get("identity", {}))),
+            network=NetworkMode(str(data.get("network", NetworkMode.DEFAULT.value))),
+            identity=IdentityMode(str(data.get("identity", IdentityMode.IMAGE.value))),
             resources=ResourceSpec.from_data(dict(data.get("resources", {}))),
-            shell_state=ShellStateSpec.from_data(dict(data.get("shell_state", {}))),
+            shell_state=_bool_from_data(data.get("shell_state", True), "shell_state"),
             ssh_agent=_bool_from_data(data.get("ssh_agent", False), "ssh_agent"),
             gpu=_bool_from_data(data.get("gpu", False), "gpu"),
             container_args=tuple(str(x) for x in data.get("container_args", [])),
-            created_at=str(data["created_at"]),
         )
 
 
@@ -398,14 +248,13 @@ class ExecSpec:
     tty: bool = False
     env: tuple[str, ...] = ()
     workdir: str | None = None
-    stream: bool = False
 
     def __post_init__(self) -> None:
         command = tuple(str(part) for part in self.command)
         if len(command) == 0:
             raise ValueError("command cannot be empty")
         object.__setattr__(self, "command", command)
-        object.__setattr__(self, "env", tuple(self.env))
+        object.__setattr__(self, "env", tuple(_parse_env(value) for value in self.env))
 
 
 class RuntimeState(Enum):
@@ -415,35 +264,6 @@ class RuntimeState(Enum):
     UNKNOWN = "unknown"
 
 
-@dataclass(frozen=True)
-class RuntimeStatus:
-    name: str
-    runner: str
-    backend_id: str
-    state: RuntimeState
-    detail: str = ""
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "state", _enum(RuntimeState, self.state))
-
-
-@dataclass(frozen=True)
-class RunnerCapabilities:
-    image_sources: tuple[ImageSourceKind, ...]
-    offline_oci_references: bool
-    directory_mounts: bool
-    file_mounts: bool
-    published_ports: bool
-    outbound_network: bool
-    restricted_network: bool
-    host_network: bool
-    ssh_agent: bool
-    gpu: bool
-    root_identity: bool
-    host_identity: bool
-    mount_options: bool = False
-
-
 def validate_machine_name(name: str) -> str:
     text = _require_text(name, "machine name")
     if MACHINE_NAME_PATTERN.fullmatch(text) is None:
@@ -451,6 +271,16 @@ def validate_machine_name(name: str) -> str:
             "machine names must use lowercase letters, numbers, or dots, with "
             "hyphens and underscores only inside labels"
         )
+    return text
+
+
+def _parse_env(value: str) -> str:
+    text = value.strip()
+    if "=" not in text:
+        raise ValueError(f"environment value must be KEY=VALUE: {value}")
+    key, _ = text.split("=", 1)
+    if not key:
+        raise ValueError(f"environment key cannot be empty: {value}")
     return text
 
 

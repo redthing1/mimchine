@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, TypeVar
 
 from .builders import Builder, get_builder
 from .config import AppConfig, Defaults, load_config, validate_builder, validate_runner
@@ -12,19 +12,12 @@ from .domain import (
     BuildSpec,
     ExecSpec,
     IdentityMode,
-    IdentitySpec,
-    ImageSource,
-    ImageSourceKind,
     MachineRecord,
-    MachineSpec,
     MountSpec,
     NetworkMode,
-    NetworkSpec,
     PortBind,
     ResourceSpec,
     RuntimeState,
-    RuntimeStatus,
-    ShellStateSpec,
 )
 from .log import logger
 from .mounts import (
@@ -33,14 +26,15 @@ from .mounts import (
     parse_mount_spec,
     parse_workspace_spec,
 )
-from .parsing import parse_env, parse_network_mode, parse_port_bind
-from .paths import cache_dir, data_dir
+from .paths import data_dir
 from .profiles import Profile, load_profile
 from .runners import Runner, get_runner
 from .shells import enter_shell_command, normalize_shell
 from .shell_state import ShellStateManager
-from .smolvm_images import MaterializeResult, PruneResult, SmolvmImageImporter
 from .state import MachineStore
+
+
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -68,12 +62,11 @@ class CreateOptions:
     workdir: str | None = None
     shell: str | None = None
     network: NetworkMode | None = None
-    allow_hosts: tuple[str, ...] = ()
-    allow_cidrs: tuple[str, ...] = ()
     ssh_agent: bool | None = None
     gpu: bool | None = None
-    resources: ResourceSpec = ResourceSpec()
-    identity: IdentitySpec | None = None
+    cpus: int | None = None
+    memory_mib: int | None = None
+    identity: IdentityMode | None = None
     shell_state: bool | None = None
     container_args: tuple[str, ...] = ()
     start: bool = False
@@ -82,7 +75,7 @@ class CreateOptions:
 @dataclass(frozen=True)
 class MachineView:
     record: MachineRecord
-    status: RuntimeStatus
+    state: RuntimeState
 
 
 class BuildService:
@@ -101,7 +94,6 @@ class BuildService:
             image=options.image,
             file=options.file,
             context=options.context,
-            builder=builder_name,
             platform=options.platform,
             build_args=options.build_args,
             no_cache=options.no_cache,
@@ -116,22 +108,19 @@ class MachineService:
         store: MachineStore,
         shell_state: ShellStateManager,
         runners: dict[str, Runner] | None = None,
-        smolvm_images: SmolvmImageImporter | None = None,
     ):
         self.config = config
         self.store = store
         self.shell_state = shell_state
         self.runners = runners or {}
-        self.smolvm_images = smolvm_images
 
     @classmethod
     def default(cls) -> "MachineService":
-        data_dir = get_data_dir()
+        app_data = data_dir()
         return cls(
             load_config(),
-            MachineStore(data_dir / "machines"),
-            ShellStateManager(data_dir / "shell-state"),
-            smolvm_images=SmolvmImageImporter(get_cache_dir() / "staging"),
+            MachineStore(app_data / "machines"),
+            ShellStateManager(app_data / "shell-state"),
         )
 
     def create(self, options: CreateOptions) -> MachineRecord:
@@ -140,45 +129,49 @@ class MachineService:
 
         profile = load_profile(self.config, options.profile)
         shell_state_enabled = _bool_option(
-            options.shell_state, profile, "shell_state", True
+            options.shell_state,
+            profile.shell_state,
+            True,
         )
         shell_state_preexisted = (
             shell_state_enabled and self.shell_state.path_for(options.name).exists()
         )
         record = self._record_from_options(options, profile, shell_state_enabled)
         runner = self._runner(record.runner)
+        _validate_create(record, runner)
 
         try:
-            if record.shell_state.enabled:
+            if record.shell_state:
                 self.shell_state.ensure(record.name)
-            _validate_runner_support(record, runner)
-            _validate_image_source(record)
-            record = self._materialize_smolvm_image(record)
             runner.create(record)
         except Exception:
-            _delete_created_shell_state(self.shell_state, record, shell_state_preexisted)
+            _delete_created_shell_state(
+                self.shell_state, record, shell_state_preexisted
+            )
             raise
 
         try:
             self.store.save(record)
         except Exception:
-            _try_delete_backend(runner, record)
-            _delete_created_shell_state(self.shell_state, record, shell_state_preexisted)
+            _try_delete_machine(runner, record)
+            _delete_created_shell_state(
+                self.shell_state, record, shell_state_preexisted
+            )
             raise
         if options.start:
             _ensure_running(record, runner)
         return record
 
-    def start(self, name: str) -> RuntimeStatus:
+    def start(self, name: str) -> RuntimeState:
         record = self.store.load(name)
         runner = self._runner(record.runner)
         return _ensure_running(record, runner)
 
-    def stop(self, name: str) -> RuntimeStatus:
+    def stop(self, name: str) -> RuntimeState:
         record = self.store.load(name)
         runner = self._runner(record.runner)
-        status = runner.inspect(record)
-        if status.state is RuntimeState.RUNNING:
+        state = runner.inspect(record)
+        if state is RuntimeState.RUNNING:
             runner.stop(record)
         return runner.inspect(record)
 
@@ -199,7 +192,7 @@ class MachineService:
         exec_env = [
             f"MIM_MACHINE={record.name}",
             f"MIM_RUNNER={record.runner}",
-            f"MIM_SHELL_STATE={int(record.shell_state.enabled)}",
+            f"MIM_SHELL_STATE={int(record.shell_state)}",
         ]
         for variable in ("TERM", "COLORTERM"):
             if value := os.environ.get(variable):
@@ -207,14 +200,12 @@ class MachineService:
         workdir = _mapped_cwd(record.mounts) or _session_workdir(record)
         runner.exec(
             record,
-            _exec_spec(
-                ExecSpec(
-                    command=shell_command,
-                    interactive=True,
-                    tty=True,
-                    env=tuple(exec_env),
-                    workdir=workdir,
-                )
+            ExecSpec(
+                command=shell_command,
+                interactive=True,
+                tty=True,
+                env=tuple(exec_env),
+                workdir=workdir,
             ),
         )
 
@@ -222,7 +213,7 @@ class MachineService:
         record = self.store.load(name)
         runner = self._runner(record.runner)
         _ensure_running(record, runner)
-        runner.exec(record, _exec_spec(spec))
+        runner.exec(record, spec)
 
     def ssh_session(
         self,
@@ -239,7 +230,7 @@ class MachineService:
         env = [
             f"MIM_MACHINE={record.name}",
             f"MIM_RUNNER={record.runner}",
-            f"MIM_SHELL_STATE={int(record.shell_state.enabled)}",
+            f"MIM_SHELL_STATE={int(record.shell_state)}",
         ]
         if term:
             env.append(f"TERM={term}")
@@ -252,188 +243,109 @@ class MachineService:
 
         runner.exec(
             record,
-            _exec_spec(
-                ExecSpec(
-                    command=command,
-                    interactive=True,
-                    tty=tty,
-                    env=tuple(env),
-                    workdir=_session_workdir(record),
-                    stream=True,
-                )
+            ExecSpec(
+                command=command,
+                interactive=True,
+                tty=tty,
+                env=tuple(env),
+                workdir=_session_workdir(record),
             ),
         )
 
     def inspect(self, name: str) -> MachineView:
-        record = self.store.load(name)
-        return MachineView(
-            record=record,
-            status=self._runner(record.runner).inspect(record),
-        )
+        return self._view(self.store.load(name))
 
     def list(self) -> list[MachineView]:
-        rows: list[MachineView] = []
-        for record in self.store.list():
-            rows.append(
-                MachineView(
-                    record=record,
-                    status=self._runner(record.runner).inspect(record),
-                )
-            )
-        return rows
+        return [self._view(record) for record in self.store.list()]
 
-    def prune(self, *, dry_run: bool = False) -> PruneResult:
-        images = self.smolvm_images or SmolvmImageImporter(get_cache_dir() / "staging")
-        return images.prune(dry_run=dry_run)
+    def _view(self, record: MachineRecord) -> MachineView:
+        return MachineView(record, self._runner(record.runner).inspect(record))
 
     def _runner(self, name: str) -> Runner:
         runner_name = validate_runner(name)
         return self.runners.get(runner_name) or get_runner(runner_name)
 
-    def _materialize_smolvm_image(self, record: MachineRecord) -> MachineRecord:
-        if (
-            record.runner != "smolvm"
-            or record.image.kind is not ImageSourceKind.OCI_REFERENCE
-            or self.smolvm_images is None
-        ):
-            return record
-        result = self.smolvm_images.materialize(
-            record.image,
-            builder=self.config.defaults.builder,
-        )
-        if result is MaterializeResult.NOT_LOCAL and record.network.mode is NetworkMode.NONE:
-            raise ValueError(
-                f"runner [smolvm] cannot create offline OCI machine from "
-                f"[{record.image.value}]: image is not present locally and is not "
-                "imported into smolvm; build or pull it with the configured builder, "
-                "import it with smolvm image import, enable networking, or use a "
-                ".smolmachine artifact"
-            )
-        return record
-
     def _record_from_options(
         self,
         options: CreateOptions,
-        profile: Profile | None,
+        profile: Profile,
         shell_state_enabled: bool,
     ) -> MachineRecord:
-        image = options.image or _profile_value(profile, "image")
+        image = _first(options.image, profile.image)
         if image is None:
             raise ValueError("image is required")
 
         runner = validate_runner(
-            options.runner
-            or _profile_value(profile, "runner")
-            or self.config.defaults.runner
+            _first(
+                options.runner,
+                profile.runner,
+                self.config.defaults.runner,
+            )
         )
-        network = _network_spec(options, profile, self.config.defaults.network)
+        network = _first(
+            options.network,
+            profile.network,
+            self.config.defaults.network,
+        )
         resources = _resource_spec(options, profile, self.config.defaults)
         mounts = _mounts(options, profile)
         if shell_state_enabled:
             mounts = (*mounts, self.shell_state.mount_for(options.name))
 
-        spec = MachineSpec(
+        return MachineRecord(
             name=options.name,
-            image=ImageSource.from_cli(image),
+            image=image,
             runner=runner,
+            created_at=_now(),
             mounts=mounts,
             ports=_ports(options, profile),
             env=_env(options, profile),
-            workdir=options.workdir or _profile_value(profile, "workdir"),
-            shell=normalize_shell(options.shell or _profile_value(profile, "shell")),
+            workdir=_first(options.workdir, profile.workdir),
+            shell=normalize_shell(_first(options.shell, profile.shell)),
             network=network,
-            identity=options.identity
-            or _profile_value(profile, "identity")
-            or IdentitySpec(),
+            identity=_first(
+                options.identity,
+                profile.identity,
+                IdentityMode.IMAGE,
+            ),
             resources=resources,
-            shell_state=ShellStateSpec(enabled=shell_state_enabled),
-            ssh_agent=_bool_option(options.ssh_agent, profile, "ssh_agent", False),
-            gpu=_bool_option(options.gpu, profile, "gpu", False),
+            shell_state=shell_state_enabled,
+            ssh_agent=_bool_option(
+                options.ssh_agent,
+                profile.ssh_agent,
+                False,
+            ),
+            gpu=_bool_option(
+                options.gpu,
+                profile.gpu,
+                False,
+            ),
             container_args=_container_args(options, profile),
         )
-        return MachineRecord.from_spec(spec, created_at=_now())
 
 
-def get_data_dir() -> Path:
-    return data_dir()
-
-
-def get_cache_dir() -> Path:
-    return cache_dir()
-
-
-def _validate_runner_support(record: MachineRecord, runner: Runner) -> None:
-    caps = runner.capabilities
-    if record.image.kind not in caps.image_sources:
-        supported = ", ".join(kind.value for kind in caps.image_sources)
-        raise ValueError(
-            f"runner [{runner.name}] does not support image source "
-            f"[{record.image.kind.value}], expected one of: {supported}"
-        )
-
-    for mount in record.mounts:
-        if mount.source.is_dir() and not caps.directory_mounts:
-            raise ValueError(f"runner [{runner.name}] does not support directory mounts")
-        if mount.source.is_file() and not caps.file_mounts:
-            raise ValueError(f"runner [{runner.name}] does not support file mounts")
-        if mount.options and not caps.mount_options:
-            raise ValueError(f"runner [{runner.name}] does not support mount options")
-
-    if (
-        record.image.kind is ImageSourceKind.OCI_REFERENCE
-        and record.network.mode is NetworkMode.NONE
-        and not caps.offline_oci_references
-    ):
-        raise ValueError(
-            f"runner [{runner.name}] needs networking to start OCI references; "
-            "enable networking or use a .smolmachine artifact"
-        )
-    if record.network.mode is NetworkMode.HOST and not caps.host_network:
-        raise ValueError(f"runner [{runner.name}] does not support host networking")
-    if record.ports and not caps.published_ports:
-        raise ValueError(f"runner [{runner.name}] does not support port publishing")
-    if record.ports and record.network.mode is NetworkMode.HOST:
+def _validate_create(record: MachineRecord, runner: Runner) -> None:
+    if record.ports and record.network is NetworkMode.HOST:
         raise ValueError("port publishing cannot be used with host networking")
-    if record.network.mode is NetworkMode.DEFAULT and not caps.outbound_network:
-        raise ValueError(f"runner [{runner.name}] does not support outbound networking")
-    if (
-        record.network.allow_hosts or record.network.allow_cidrs
-    ) and not caps.restricted_network:
-        raise ValueError(f"runner [{runner.name}] does not support restricted networking")
-    if record.identity.mode is IdentityMode.ROOT and not caps.root_identity:
-        raise ValueError(f"runner [{runner.name}] does not support root identity")
-    if record.identity.mode is IdentityMode.HOST and not caps.host_identity:
-        raise ValueError(f"runner [{runner.name}] does not support host identity")
-    if record.ssh_agent and not caps.ssh_agent:
-        raise ValueError(f"runner [{runner.name}] does not support SSH agent forwarding")
-    if record.gpu and not caps.gpu:
+    if record.gpu and not runner.supports_gpu:
         raise ValueError(f"runner [{runner.name}] does not support GPU forwarding")
-    if record.container_args and record.runner not in {"podman", "docker"}:
-        raise ValueError(f"runner [{runner.name}] does not support container args")
 
 
-def _validate_image_source(record: MachineRecord) -> None:
-    if record.image.kind is ImageSourceKind.SMOLMACHINE:
-        path = Path(record.image.value)
-        if not path.is_file():
-            raise ValueError(f".smolmachine file does not exist: {path}")
-
-
-def _ensure_running(record: MachineRecord, runner: Runner) -> RuntimeStatus:
-    status = runner.inspect(record)
-    if status.state is RuntimeState.RUNNING:
-        return status
-    if status.state is RuntimeState.STOPPED:
+def _ensure_running(record: MachineRecord, runner: Runner) -> RuntimeState:
+    state = runner.inspect(record)
+    if state is RuntimeState.RUNNING:
+        return state
+    if state is RuntimeState.STOPPED:
         runner.start(record)
-        return runner.inspect(record)
-    if status.state is RuntimeState.MISSING:
-        raise ValueError(
-            f"machine [{record.name}] backend [{record.backend_id}] is missing; "
-            "delete and recreate it"
-        )
-    raise ValueError(
-        f"machine [{record.name}] backend [{record.backend_id}] state is unknown"
-    )
+        state = runner.inspect(record)
+        if state is not RuntimeState.RUNNING:
+            raise ValueError(
+                f"machine [{record.name}] failed to start; state is {state.value}"
+            )
+        return state
+    if state is RuntimeState.MISSING:
+        raise ValueError(f"machine [{record.name}] is missing; delete and recreate it")
+    raise ValueError(f"machine [{record.name}] state is unknown")
 
 
 def _delete_created_shell_state(
@@ -441,27 +353,25 @@ def _delete_created_shell_state(
     record: MachineRecord,
     preexisted: bool,
 ) -> None:
-    if record.shell_state.enabled and not preexisted:
+    if record.shell_state and not preexisted:
         shell_state.delete(record.name)
 
 
-def _try_delete_backend(runner: Runner, record: MachineRecord) -> None:
+def _try_delete_machine(runner: Runner, record: MachineRecord) -> None:
     try:
         runner.delete(record)
     except Exception as exc:
         logger.warning(
-            "failed to clean up backend [%s] after create failure: %s",
-            record.backend_id,
+            "failed to clean up machine [%s] after create failure: %s",
+            record.name,
             exc,
         )
 
 
-def _mounts(options: CreateOptions, profile: Profile | None) -> tuple[MountSpec, ...]:
-    workspace_specs = _tuple_profile_value(profile, "workspaces") + options.workspaces
-    home_share_specs = (
-        _tuple_profile_value(profile, "home_shares") + options.home_shares
-    )
-    mount_specs = _tuple_profile_value(profile, "mounts") + options.mounts
+def _mounts(options: CreateOptions, profile: Profile) -> tuple[MountSpec, ...]:
+    workspace_specs = profile.workspaces + options.workspaces
+    home_share_specs = profile.home_shares + options.home_shares
+    mount_specs = profile.mounts + options.mounts
     mounts: list[MountSpec] = []
     mounts.extend(parse_workspace_spec(value) for value in workspace_specs)
     for value in home_share_specs:
@@ -470,88 +380,49 @@ def _mounts(options: CreateOptions, profile: Profile | None) -> tuple[MountSpec,
     return tuple(mounts)
 
 
-def _ports(options: CreateOptions, profile: Profile | None) -> tuple[PortBind, ...]:
-    values = _tuple_profile_value(profile, "ports") + options.ports
-    return tuple(parse_port_bind(value) for value in values)
+def _ports(options: CreateOptions, profile: Profile) -> tuple[PortBind, ...]:
+    values = profile.ports + options.ports
+    return tuple(PortBind.parse(value) for value in values)
 
 
-def _env(options: CreateOptions, profile: Profile | None) -> tuple[str, ...]:
-    values = _tuple_profile_value(profile, "env") + options.env
-    return tuple(parse_env(value) for value in values)
+def _env(options: CreateOptions, profile: Profile) -> tuple[str, ...]:
+    return profile.env + options.env
 
 
-def _container_args(options: CreateOptions, profile: Profile | None) -> tuple[str, ...]:
-    return _tuple_profile_value(profile, "container_args") + options.container_args
-
-
-def _exec_spec(spec: ExecSpec) -> ExecSpec:
-    return ExecSpec(
-        command=spec.command,
-        interactive=spec.interactive,
-        tty=spec.tty,
-        env=tuple(parse_env(value) for value in spec.env),
-        workdir=spec.workdir,
-        stream=spec.stream,
-    )
-
-
-def _network_spec(
-    options: CreateOptions,
-    profile: Profile | None,
-    default: NetworkMode,
-) -> NetworkSpec:
-    mode = options.network or _profile_value(profile, "network") or default
-    if not isinstance(mode, NetworkMode):
-        mode = parse_network_mode(str(mode))
-    return NetworkSpec(
-        mode=mode,
-        allow_hosts=options.allow_hosts,
-        allow_cidrs=options.allow_cidrs,
-    )
+def _container_args(options: CreateOptions, profile: Profile) -> tuple[str, ...]:
+    return profile.container_args + options.container_args
 
 
 def _resource_spec(
     options: CreateOptions,
-    profile: Profile | None,
+    profile: Profile,
     defaults: Defaults,
 ) -> ResourceSpec:
     return ResourceSpec(
-        cpus=options.resources.cpus
-        or _profile_value(profile, "cpus")
-        or defaults.resources.cpus,
-        memory_mib=options.resources.memory_mib
-        or _profile_value(profile, "memory")
-        or defaults.resources.memory_mib,
-        storage_gib=options.resources.storage_gib
-        or _profile_value(profile, "storage")
-        or defaults.resources.storage_gib,
-        overlay_gib=options.resources.overlay_gib
-        or _profile_value(profile, "overlay")
-        or defaults.resources.overlay_gib,
+        cpus=_first(
+            options.cpus,
+            profile.cpus,
+            defaults.resources.cpus,
+        ),
+        memory_mib=_first(
+            options.memory_mib,
+            profile.memory,
+            defaults.resources.memory_mib,
+        ),
     )
 
 
-def _profile_value(profile: Profile | None, name: str):
-    if profile is None:
-        return None
-    return getattr(profile, name)
-
-
-def _tuple_profile_value(profile: Profile | None, name: str) -> tuple[str, ...]:
-    if profile is None:
-        return ()
-    return getattr(profile, name)
+def _first(*values: T | None) -> T | None:
+    return next((value for value in values if value is not None), None)
 
 
 def _bool_option(
     value: bool | None,
-    profile: Profile | None,
-    profile_name: str,
+    profile_value: bool | None,
     default: bool,
 ) -> bool:
     if value is not None:
         return value
-    profile_value = _profile_value(profile, profile_name)
     if profile_value is not None:
         return profile_value
     return default
