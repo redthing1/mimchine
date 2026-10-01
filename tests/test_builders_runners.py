@@ -118,6 +118,7 @@ def test_podman_runner_create_uses_record_as_command_source(tmp_path: Path) -> N
     )
     assert "--network" in command
     assert "none" in command
+    assert "--tz=local" in command
     cpu_index = command.index("--cpus")
     memory_index = command.index("--memory")
     assert command[cpu_index : cpu_index + 2] == ("--cpus", "2")

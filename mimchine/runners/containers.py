@@ -47,6 +47,8 @@ class _ContainerRunner:
         ]
         args.extend(self._identity_args(record))
         args.extend(self._network_args(record))
+        if self.name == "podman":
+            args.append("--tz=local")
         if record.resources.cpus:
             args.extend(("--cpus", str(record.resources.cpus)))
         if record.resources.memory_mib:
