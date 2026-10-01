@@ -68,6 +68,7 @@ def test_create_cli_passes_machine_intent(monkeypatch, tmp_path: Path) -> None:
             "--host-user",
             "--start",
             "--gpu",
+            "--job-limits",
             "--cpus",
             "3",
             "--mem",
@@ -87,6 +88,7 @@ def test_create_cli_passes_machine_intent(monkeypatch, tmp_path: Path) -> None:
     assert options.identity is IdentityMode.HOST
     assert options.start is True
     assert options.gpu is True
+    assert options.job_limits is True
     assert options.cpus == 3
     assert options.memory_mib == 512
     assert options.container_args == ("--device=vendor.example/gpu=all",)
@@ -128,7 +130,21 @@ def test_exec_cli_passes_command_spec(monkeypatch) -> None:
 
     result = CliRunner().invoke(
         cli.app,
-        ["exec", "-i", "-t", "-e", "A=B", "-w", "/work", "dev", "sh", "-lc", "true"],
+        [
+            "exec",
+            "-i",
+            "-t",
+            "--memory",
+            "64",
+            "-e",
+            "A=B",
+            "-w",
+            "/work",
+            "dev",
+            "sh",
+            "-lc",
+            "true",
+        ],
     )
 
     assert result.exit_code == 0
@@ -138,6 +154,7 @@ def test_exec_cli_passes_command_spec(monkeypatch) -> None:
     assert captured["spec"].tty is True
     assert captured["spec"].env == ("A=B",)
     assert captured["spec"].workdir == "/work"
+    assert captured["spec"].memory_mib == 64
 
 
 def test_exec_cli_accepts_separator_after_name(monkeypatch) -> None:

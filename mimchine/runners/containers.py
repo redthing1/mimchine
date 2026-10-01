@@ -15,6 +15,7 @@ from ..domain import (
 )
 from ..process import ProcessError, ProcessRunner
 from ..gpu import podman_gpu_args
+from ..job_limits import HELPER_PATH, SETUP_SCRIPT, helper_mount_source, require_host
 
 
 NEUTRAL_BACKEND_CWD = "/"
@@ -35,6 +36,7 @@ class _ContainerRunner:
         self.runner = runner
 
     def create(self, record: MachineRecord) -> None:
+        job_args = self._job_limits_args(record) if record.job_limits else ()
         args = [
             self.binary,
             "create",
@@ -61,6 +63,8 @@ class _ContainerRunner:
             args.extend(self._ssh_agent_args())
         if record.gpu:
             args.extend(self._gpu_args())
+        if record.job_limits:
+            args.extend(job_args)
         args.extend(record.container_args)
         args.extend([record.image, "sh", "-lc", KEEPALIVE_COMMAND])
         self.runner.run(args, foreground=True, discard_stdout=True)
@@ -72,6 +76,8 @@ class _ContainerRunner:
             discard_stdout=True,
             cwd=NEUTRAL_BACKEND_CWD,
         )
+        if record.job_limits:
+            self._prepare_jobs(record)
 
     def stop(self, record: MachineRecord) -> None:
         self.runner.run(
@@ -91,6 +97,8 @@ class _ContainerRunner:
         )
 
     def exec(self, record: MachineRecord, spec: ExecSpec) -> None:
+        if spec.memory_mib is not None and not record.job_limits:
+            raise ValueError("command memory limits require creation with --job-limits")
         args = [self.binary, "exec"]
         if spec.interactive:
             args.append("-i")
@@ -101,7 +109,18 @@ class _ContainerRunner:
         if spec.workdir:
             args.extend(["-w", spec.workdir])
         args.append(record.name)
-        args.extend(spec.command)
+        command = spec.command
+        if spec.memory_mib is not None:
+            command = (HELPER_PATH, "--memory", str(spec.memory_mib), "--", *command)
+        if record.job_limits:
+            command = (
+                "sh",
+                "-c",
+                'export PATH="/mim/bin:$PATH"; exec "$@"',
+                "mim-exec",
+                *command,
+            )
+        args.extend(command)
         self.runner.run(args, foreground=True, cwd=NEUTRAL_BACKEND_CWD)
 
     def inspect(self, record: MachineRecord) -> RuntimeState:
@@ -155,6 +174,12 @@ class _ContainerRunner:
     def _gpu_args(self) -> tuple[str, ...]:
         raise ValueError(f"runner [{self.name}] does not support GPU forwarding")
 
+    def _job_limits_args(self, record: MachineRecord) -> tuple[str, ...]:
+        raise ValueError(f"runner [{self.name}] does not support job limits")
+
+    def _prepare_jobs(self, record: MachineRecord) -> None:
+        raise ValueError(f"runner [{self.name}] does not support job limits")
+
     def _inspect_args(self, name: str) -> list[str]:
         return [self.binary, "inspect", name]
 
@@ -166,6 +191,57 @@ class PodmanRunner(_ContainerRunner):
 
     def _gpu_args(self) -> tuple[str, ...]:
         return podman_gpu_args()
+
+    def _job_limits_args(self, record: MachineRecord) -> tuple[str, ...]:
+        conflicting = (
+            "--cgroupns",
+            "--cgroups",
+            "--cgroup-parent",
+            "--runtime",
+            "--annotation",
+        )
+        if any(arg.split("=", 1)[0] in conflicting for arg in record.container_args):
+            raise ValueError(
+                "custom cgroup/runtime annotations cannot be combined with --job-limits"
+            )
+        result = self.runner.run(
+            [self.binary, "info", "--format", "json"], capture=True
+        )
+        require_host(json.loads(result.stdout))
+        source = helper_mount_source()
+        return (
+            "--cgroupns=private",
+            "--security-opt=unmask=/sys/fs/cgroup",
+            "--annotation=run.oci.systemd.subgroup=container",
+            "--annotation=run.oci.delegate-cgroup=payload",
+            "-v",
+            f"{source}:{HELPER_PATH}:ro,z",
+        )
+
+    def _prepare_jobs(self, record: MachineRecord) -> None:
+        result = self.runner.run(
+            [self.binary, "exec", record.name, "sh", "-c", "id -u; id -g"],
+            capture=True,
+            cwd=NEUTRAL_BACKEND_CWD,
+        )
+        identity = _parse_image_identity(record.image, result.stdout)
+        self.runner.run(
+            [
+                self.binary,
+                "exec",
+                "--user",
+                "0:0",
+                record.name,
+                "sh",
+                "-c",
+                SETUP_SCRIPT,
+                "mim-job-setup",
+                str(identity.uid),
+                str(identity.gid),
+            ],
+            foreground=True,
+            cwd=NEUTRAL_BACKEND_CWD,
+        )
 
     def _image_identity_args(self, record: MachineRecord) -> list[str]:
         identity = self._resolve_image_identity(record.image)

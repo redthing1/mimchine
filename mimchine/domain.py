@@ -174,6 +174,7 @@ class MachineRecord:
     shell_state: bool = True
     ssh_agent: bool = False
     gpu: bool = False
+    job_limits: bool = False
     container_args: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -193,6 +194,7 @@ class MachineRecord:
         )
         _validate_bool(self.ssh_agent, "ssh_agent")
         _validate_bool(self.gpu, "gpu")
+        _validate_bool(self.job_limits, "job_limits")
         _validate_bool(self.shell_state, "shell_state")
 
     def to_data(self) -> dict[str, Any]:
@@ -212,6 +214,7 @@ class MachineRecord:
             "shell_state": self.shell_state,
             "ssh_agent": self.ssh_agent,
             "gpu": self.gpu,
+            "job_limits": self.job_limits,
             "container_args": list(self.container_args),
             "created_at": self.created_at,
         }
@@ -237,6 +240,7 @@ class MachineRecord:
             shell_state=_bool_from_data(data.get("shell_state", True), "shell_state"),
             ssh_agent=_bool_from_data(data.get("ssh_agent", False), "ssh_agent"),
             gpu=_bool_from_data(data.get("gpu", False), "gpu"),
+            job_limits=_bool_from_data(data.get("job_limits", False), "job_limits"),
             container_args=tuple(str(x) for x in data.get("container_args", [])),
         )
 
@@ -248,6 +252,7 @@ class ExecSpec:
     tty: bool = False
     env: tuple[str, ...] = ()
     workdir: str | None = None
+    memory_mib: int | None = None
 
     def __post_init__(self) -> None:
         command = tuple(str(part) for part in self.command)
@@ -255,6 +260,10 @@ class ExecSpec:
             raise ValueError("command cannot be empty")
         object.__setattr__(self, "command", command)
         object.__setattr__(self, "env", tuple(_parse_env(value) for value in self.env))
+        if self.memory_mib is not None:
+            ResourceSpec(memory_mib=self.memory_mib)
+            if self.memory_mib > 8796093022207:
+                raise ValueError("memory limit is too large")
 
 
 class RuntimeState(Enum):

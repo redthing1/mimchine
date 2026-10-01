@@ -26,6 +26,7 @@ PROFILE_KEYS = {
     "shell_state",
     "ssh_agent",
     "gpu",
+    "job_limits",
     "container_arg",
     "container_args",
     "cpus",
@@ -50,6 +51,7 @@ class Profile:
     shell_state: bool | None = None
     ssh_agent: bool | None = None
     gpu: bool | None = None
+    job_limits: bool | None = None
     container_args: tuple[str, ...] = ()
     cpus: int | None = None
     memory: int | None = None
@@ -98,6 +100,7 @@ def read_profile(name: str, data: dict[str, Any]) -> Profile:
         shell_state=_optional_bool(data.get("shell_state")),
         ssh_agent=_optional_bool(data.get("ssh_agent")),
         gpu=_optional_bool(data.get("gpu")),
+        job_limits=_optional_bool(data.get("job_limits")),
         container_args=_read_str_tuple(data, "container_arg", "container_args"),
         cpus=_optional_int(data.get("cpus")),
         memory=_optional_int(data.get("memory")),

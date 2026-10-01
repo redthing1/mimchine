@@ -25,6 +25,7 @@ packages = ["mimchine"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "mimchine/enter_shell.sh" = "mimchine/enter_shell.sh"
+"mimchine/scripts/mim-limit.sh" = "mimchine/scripts/mim-limit.sh"
 
 [dependency-groups]
 build = [

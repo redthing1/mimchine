@@ -28,6 +28,7 @@ def test_machine_record_round_trips(tmp_path: Path) -> None:
         env=("APP_ENV=dev",),
         network=NetworkMode.NONE,
         gpu=True,
+        job_limits=True,
     )
 
     assert (record.name, record.image, record.runner, record.created_at) == (
@@ -69,7 +70,7 @@ def test_environment_requires_a_key_value_pair(value: str) -> None:
         ExecSpec(("true",), env=(value,))
 
 
-@pytest.mark.parametrize("field", ["ssh_agent", "gpu", "shell_state"])
+@pytest.mark.parametrize("field", ["ssh_agent", "gpu", "job_limits", "shell_state"])
 def test_record_boolean_fields_must_be_boolean(field: str) -> None:
     record = MachineRecord(
         "dev",

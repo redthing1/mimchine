@@ -189,6 +189,12 @@ def create(
     ),
     gpu: bool = typer.Option(False, "--gpu", help="Expose all host GPUs."),
     no_gpu: bool = typer.Option(False, "--no-gpu", help="Disable backend GPU support."),
+    job_limits: Optional[bool] = typer.Option(
+        None,
+        "--job-limits/--no-job-limits",
+        show_default=False,
+        help="Allow per-command memory limits (Podman, Linux cgroup v2, crun).",
+    ),
     cpus: Optional[int] = typer.Option(None, "--cpus", "-c", min=1, help="vCPU count."),
     mem: Optional[int] = typer.Option(
         None, "--mem", "--memory", min=1, help="Memory MiB."
@@ -229,6 +235,7 @@ def create(
                 network=_network_from_flags(net, no_net, host_net),
                 ssh_agent=_optional_bool_flag(ssh_agent, no_ssh_agent, "ssh-agent"),
                 gpu=_optional_bool_flag(gpu, no_gpu, "gpu"),
+                job_limits=job_limits,
                 cpus=cpus,
                 memory_mib=mem,
                 identity=_identity_from_flags(root, host_user),
@@ -268,6 +275,13 @@ def exec_command(
         False, "--interactive", "-i", help="Keep stdin open."
     ),
     tty: bool = typer.Option(False, "--tty", "-t", help="Allocate a TTY."),
+    memory: Optional[int] = typer.Option(
+        None,
+        "--memory",
+        "--mem",
+        min=1,
+        help="Command and descendants' memory cap in MiB; requires --job-limits.",
+    ),
     env: list[str] = typer.Option(
         [],
         "--env",
@@ -287,6 +301,7 @@ def exec_command(
             name,
             ExecSpec(
                 command=guest_command,
+                memory_mib=memory,
                 interactive=interactive,
                 tty=tty,
                 env=tuple(env),
@@ -434,6 +449,7 @@ def inspect(name: str = typer.Argument(..., help="Machine name.")) -> None:
                 ("workdir", record.workdir or ""),
                 ("shell", record.shell or service.config.defaults.shell or "auto"),
                 ("gpu", "yes" if record.gpu else "no"),
+                ("job limits", "yes" if record.job_limits else "no"),
                 ("created", record.created_at),
             ],
         )

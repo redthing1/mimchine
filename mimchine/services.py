@@ -64,6 +64,7 @@ class CreateOptions:
     network: NetworkMode | None = None
     ssh_agent: bool | None = None
     gpu: bool | None = None
+    job_limits: bool | None = None
     cpus: int | None = None
     memory_mib: int | None = None
     identity: IdentityMode | None = None
@@ -211,6 +212,8 @@ class MachineService:
 
     def exec(self, name: str, spec: ExecSpec) -> None:
         record = self.store.load(name)
+        if spec.memory_mib is not None and not record.job_limits:
+            raise ValueError("command memory limits require creation with --job-limits")
         runner = self._runner(record.runner)
         _ensure_running(record, runner)
         runner.exec(record, spec)
@@ -320,11 +323,16 @@ class MachineService:
                 profile.gpu,
                 False,
             ),
+            job_limits=_bool_option(options.job_limits, profile.job_limits, False),
             container_args=_container_args(options, profile),
         )
 
 
 def _validate_create(record: MachineRecord, runner: Runner) -> None:
+    if record.job_limits and runner.name != "podman":
+        raise ValueError(
+            "job limits require Podman on native Linux with cgroup v2 and crun"
+        )
     if record.ports and record.network is NetworkMode.HOST:
         raise ValueError("port publishing cannot be used with host networking")
     if record.gpu and not runner.supports_gpu:

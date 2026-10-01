@@ -79,6 +79,7 @@ def test_read_profile_normalizes_supported_fields() -> None:
             "shell_state": False,
             "ssh_agent": True,
             "gpu": True,
+            "job_limits": True,
             "container_args": ["--device=vendor.example/gpu=all"],
             "cpus": 2,
         },
@@ -94,6 +95,7 @@ def test_read_profile_normalizes_supported_fields() -> None:
     assert profile.shell_state is False
     assert profile.ssh_agent is True
     assert profile.gpu is True
+    assert profile.job_limits is True
     assert profile.container_args == ("--device=vendor.example/gpu=all",)
     assert profile.cpus == 2
 
