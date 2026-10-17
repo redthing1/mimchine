@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 from pathlib import Path
 
 import pytest
@@ -250,6 +251,10 @@ def test_ssh_proxy_builds_one_shot_forced_session_command(tmp_path: Path) -> Non
         environment={
             "PATH": "/opt/homebrew/bin:/usr/bin",
             "XDG_DATA_HOME": "/example/mim data",
+            "XDG_RUNTIME_DIR": "/run/user/1000",
+            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus;unix:path=/example/other bus",
+            "OPENAI_API_KEY": "must-not-forward",
+            "SSH_AUTH_SOCK": "/private/agent.sock",
         },
     )
 
@@ -266,6 +271,15 @@ def test_ssh_proxy_builds_one_shot_forced_session_command(tmp_path: Path) -> Non
     assert "PATH=/opt/homebrew/bin:/usr/bin" in command[-1]
     assert "'XDG_DATA_HOME=/example/mim data'" in command[-1]
     assert command[-1].endswith("mim-test _ssh-session dev")
+    session = shlex.split(command[-1].removeprefix("ForceCommand="))
+    assert "XDG_RUNTIME_DIR=/run/user/1000" in session
+    assert (
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus;unix:path=/example/other bus"
+        in session
+    )
+    assert not any(
+        value.startswith(("OPENAI_API_KEY=", "SSH_AUTH_SOCK=")) for value in session
+    )
 
 
 def test_ssh_client_uses_managed_config_and_mim_hostname(tmp_path: Path) -> None:

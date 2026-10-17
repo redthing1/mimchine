@@ -298,7 +298,14 @@ def ssh_proxy_command(
     source_env = os.environ if environment is None else environment
     session_env = tuple(
         f"{key}={source_env[key]}"
-        for key in ("PATH", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME")
+        for key in (
+            "PATH",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_RUNTIME_DIR",
+            "DBUS_SESSION_BUS_ADDRESS",
+        )
         if source_env.get(key)
     )
     if session_env:
