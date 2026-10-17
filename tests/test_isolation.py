@@ -70,13 +70,9 @@ def test_gvisor_policy_preserves_rootfs_and_host_editable_workspaces(tmp_path):
     assert data["execution_enabled"] is False
     assert plan.create[:2] == ("podman", "--remote=false")
     assert "mimchine.id=<machine-id>" in plan.create
-    assert "overlay2=none" in plan.policy.flags
-    assert "file-access-mounts=shared" in plan.policy.flags
-    assert "directfs=false" in plan.policy.flags
-    assert "ignore-cgroups=false" in plan.policy.flags
-    assert "host-settings=check" in plan.policy.flags
-    assert "allow-flag-override=false" in plan.policy.flags
-    assert "character-device-policy=emulated-only" in plan.policy.flags
+    assert plan.policy.profile == "online"
+    assert plan.policy.entrypoint == "/opt/runsc/release/profiles/online/runsc"
+    assert not any(arg.startswith("--runtime-flag") for arg in plan.create)
     assert "--pids-limit=1024" in plan.create
     assert "--pids-limit=-1" not in plan.create
     assert "--security-opt=no-new-privileges" in plan.create
@@ -120,7 +116,7 @@ def test_every_gvisor_lifecycle_template_has_the_same_policy_and_id():
 def test_offline_network_does_not_fall_back_to_host_network():
     plan = gvisor_plan(machine(network=NetworkMode.NONE))
 
-    assert "network=none" in plan.policy.flags
+    assert plan.policy.profile == "offline"
     assert "--network=pasta" not in plan.create
     assert plan.create[plan.create.index("--network") + 1] == "none"
 
@@ -129,8 +125,8 @@ def test_ssh_agent_grant_is_explicit_and_has_an_authority_requirement():
     ordinary = gvisor_plan(machine())
     forwarded = gvisor_plan(machine(ssh_agent=True))
 
-    assert "host-uds=none" in ordinary.policy.flags
-    assert "host-uds=open" in forwarded.policy.flags
+    assert ordinary.policy.profile == "online"
+    assert forwarded.policy.profile == "online-agent"
     assert "<ssh-auth-sock>:/mim/ssh-agent.sock:ro" in forwarded.create
     assert any(item.name == "host-socket-grant" for item in forwarded.requirements)
 
@@ -279,7 +275,7 @@ def test_missing_runtime_is_reported_without_searching_path():
 
     assert plan.to_data()["runtime"]["path"] is None
     assert plan.requirements[0].name == "runtime-path"
-    assert "<runsc-path>" in plan.create
+    assert "<gvisor-directory>/profiles/online/runsc" in plan.create
 
 
 def test_configuration_loads_isolation_policy_and_external_runtime(tmp_path):

@@ -20,7 +20,7 @@ configuration; they do not establish host compatibility or authorize execution.
 
 ```toml
 [runtimes.gvisor]
-path = "/opt/gvisor/runsc"
+path = "/usr/lib/mim-gvisor/20261012.0-mim.3/runsc"
 
 [profiles.isolated]
 image = "app:dev"
@@ -33,10 +33,14 @@ job_limits = false
 mim create dev -P isolated --plan
 ```
 
-The runtime path must be absolute. Mim expects an externally installed runsc
-distribution; the path need not exist to inspect a plan. Isolation selection
-follows command line, profile, then defaults. Runtime flags belong to mim's
-policy and cannot be overridden through configuration.
+An explicit runtime path must be absolute. Runtime discovery selects the newest
+release under `/usr/lib/mim-gvisor`; custom installations use the path above.
+Mim expects an externally installed
+[Mim gVisor distribution](https://github.com/redthing1/gvisor),
+including its sidecars and fixed runtime profiles. The path need not exist to
+inspect a plan. Isolation selection follows command line, profile, then defaults.
+The selected runtime profile retains its settings across Podman invocations;
+runtime flags cannot be overridden through mim configuration.
 
 ## Candidate policy
 

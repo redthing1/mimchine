@@ -39,32 +39,25 @@ class GvisorPolicy:
     ssh_agent: bool
 
     @property
-    def flags(self) -> tuple[str, ...]:
-        return (
-            "platform=systrap",
-            f"network={'none' if self.network is NetworkMode.NONE else 'sandbox'}",
-            "directfs=false",
-            "overlay2=none",
-            "file-access-mounts=shared",
-            "ignore-cgroups=false",
-            "host-settings=check",
-            "allow-flag-override=false",
-            "allow-suid=false",
-            "net-raw=false",
-            "host-fifo=none",
-            "character-device-policy=emulated-only",
-            f"host-uds={'open' if self.ssh_agent else 'none'}",
+    def profile(self) -> str:
+        network = "offline" if self.network is NetworkMode.NONE else "online"
+        return network + ("-agent" if self.ssh_agent else "")
+
+    @property
+    def entrypoint(self) -> str:
+        root = (
+            str(self.runtime.path.parent) if self.runtime.path else "<gvisor-directory>"
         )
+        return f"{root}/profiles/{self.profile}/runsc"
 
     @property
     def prefix(self) -> tuple[str, ...]:
-        path = str(self.runtime.path) if self.runtime.path else "<runsc-path>"
         return (
             "podman",
             "--remote=false",
+            "--cgroup-manager=systemd",
             "--runtime",
-            path,
-            *(f"--runtime-flag={flag}" for flag in self.flags),
+            self.entrypoint,
         )
 
 
@@ -90,7 +83,8 @@ class MachinePlan:
                 "path": None
                 if self.policy.runtime.path is None
                 else str(self.policy.runtime.path),
-                "flags": list(self.policy.flags),
+                "profile": self.policy.profile,
+                "entrypoint": self.policy.entrypoint,
             },
             "command_templates": {
                 "create": list(self.create),
@@ -140,7 +134,7 @@ def plan_machine(
         requirements = (
             Requirement(
                 "runtime-path",
-                "Configure an absolute [runtimes.gvisor].path to an installed runsc distribution.",
+                "Discover an installed Mim gVisor release in /usr/lib/mim-gvisor, or configure an absolute [runtimes.gvisor].path.",
             ),
             *requirements,
         )
@@ -318,7 +312,7 @@ def _gvisor_requirements() -> tuple[Requirement, ...]:
         ),
         Requirement(
             "distribution",
-            "Pin and verify the installed runsc distribution, including sidecars; qualify rootless systemd cgroup support, potentially with an upstream patch set.",
+            "Verify the installed Mim gVisor distribution manifest, sidecars and selected fixed runtime profile; bind its canonical path and manifest digest.",
         ),
         Requirement(
             "runtime-policy",
