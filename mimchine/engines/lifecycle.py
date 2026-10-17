@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-
 # Optional image-owned service hook. mim still owns the long-lived keepalive
-# shell so all runners expose the same named-machine lifecycle.
+# shell so all engines expose the same named-machine lifecycle.
 STARTUP_HOOK = "/usr/local/bin/mimchine-start"
 KEEPALIVE_COMMAND = f"""
 hook_pid=""

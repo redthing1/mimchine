@@ -4,12 +4,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import AppConfig, validate_runner
-from .domain import IdentityMode, NetworkMode
-
+from .domain import IdentityMode, IsolationMode, NetworkMode
 
 PROFILE_KEYS = {
     "image",
     "runner",
+    "isolation",
     "workspace",
     "workspaces",
     "home_share",
@@ -39,6 +39,7 @@ class Profile:
     name: str | None = None
     image: str | None = None
     runner: str | None = None
+    isolation: IsolationMode | None = None
     workspaces: tuple[str, ...] = ()
     home_shares: tuple[str, ...] = ()
     mounts: tuple[str, ...] = ()
@@ -83,11 +84,13 @@ def read_profile(name: str, data: dict[str, Any]) -> Profile:
     network = None if network_text is None else NetworkMode(network_text)
     identity_text = _optional_text(data.get("identity"))
     identity = None if identity_text is None else IdentityMode(identity_text)
+    isolation_text = _optional_text(data.get("isolation"))
 
     return Profile(
         name=name,
         image=_optional_text(data.get("image")),
         runner=runner,
+        isolation=None if isolation_text is None else IsolationMode(isolation_text),
         workspaces=_read_str_tuple(data, "workspace", "workspaces"),
         home_shares=_read_str_tuple(data, "home_share", "home_shares"),
         mounts=_read_str_tuple(data, "mount", "mounts"),

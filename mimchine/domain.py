@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
-
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MACHINE_NAME_PATTERN = re.compile(
     r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?"
     r"(?:\.[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)*"
@@ -43,6 +44,11 @@ class IdentityMode(Enum):
     HOST = "host"
 
 
+class IsolationMode(Enum):
+    NATIVE = "native"
+    GVISOR = "gvisor"
+
+
 @dataclass(frozen=True)
 class MountSpec:
     source: Path
@@ -52,7 +58,12 @@ class MountSpec:
     options: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "source", _normalize_path(self.source))
+        # Resolve operator input in the mount parser. A stored path is intent;
+        # loading it must not reinterpret a symlink against today's filesystem.
+        source = Path(self.source)
+        if not source.is_absolute():
+            raise ValueError("mount source must be absolute")
+        object.__setattr__(self, "source", source)
         target = _require_text(self.target, "mount target")
         if not target.startswith("/"):
             raise ValueError(f"mount target must be absolute: {target}")
@@ -67,6 +78,7 @@ class MountSpec:
             if option in {"ro", "rw"}:
                 raise ValueError(f"mount option cannot be an access mode: {option}")
         object.__setattr__(self, "options", options)
+        _validate_bool(self.read_only, "read_only")
 
     @property
     def mode(self) -> str:
@@ -90,11 +102,11 @@ class MountSpec:
     @classmethod
     def from_data(cls, data: dict[str, Any]) -> "MountSpec":
         return cls(
-            source=Path(str(data["source"])),
-            target=str(data["target"]),
-            read_only=_bool_from_data(data.get("read_only", False), "read_only"),
-            kind=str(data.get("kind", "mount")),
-            options=tuple(str(x) for x in data.get("options", [])),
+            source=Path(data["source"]),
+            target=data["target"],
+            read_only=data.get("read_only", False),
+            kind=data.get("kind", "mount"),
+            options=tuple(data.get("options", [])),
         )
 
 
@@ -102,29 +114,58 @@ class MountSpec:
 class PortBind:
     host: int
     guest: int
+    address: str | None = None
+    protocol: str = "tcp"
 
     def __post_init__(self) -> None:
         _validate_port(self.host, "host port")
         _validate_port(self.guest, "guest port")
+        if self.address is not None:
+            if not isinstance(self.address, str):
+                raise ValueError("port address must be a string")
+            object.__setattr__(self, "address", str(ipaddress.ip_address(self.address)))
+        if self.protocol not in {"tcp", "udp"}:
+            raise ValueError("port protocol must be tcp or udp")
 
     def arg(self) -> str:
-        return f"{self.host}:{self.guest}"
+        prefix = ""
+        if self.address is not None:
+            address = f"[{self.address}]" if ":" in self.address else self.address
+            prefix = f"{address}:"
+        suffix = "" if self.protocol == "tcp" else "/udp"
+        return f"{prefix}{self.host}:{self.guest}{suffix}"
 
     @classmethod
     def parse(cls, value: str) -> "PortBind":
-        parts = value.strip().split(":")
+        mapping, separator, protocol = value.strip().partition("/")
+        protocol = protocol if separator else "tcp"
+        address = None
+        if mapping.startswith("["):
+            address, close, mapping = mapping[1:].partition("]:")
+            if not close:
+                raise ValueError(f"invalid port mapping: {value}")
+        parts = mapping.split(":")
+        if len(parts) == 3 and address is None:
+            address, *parts = parts
         if len(parts) != 2 or any(part == "" for part in parts):
             raise ValueError(f"invalid port mapping: {value}")
-        return cls(host=int(parts[0]), guest=int(parts[1]))
+        return cls(int(parts[0]), int(parts[1]), address, protocol)
 
-    def to_data(self) -> dict[str, int]:
-        return {"host": self.host, "guest": self.guest}
+    def to_data(self) -> dict[str, Any]:
+        return {
+            "host": self.host,
+            "guest": self.guest,
+            "address": self.address,
+            "protocol": self.protocol,
+        }
 
     @classmethod
     def from_data(cls, data: dict[str, Any]) -> "PortBind":
         return cls(
-            host=_int_from_data(data["host"], "host port"),
-            guest=_int_from_data(data["guest"], "guest port"),
+            host=data["host"],
+            guest=data["guest"],
+            address=data.get("address"),
+            protocol=data.get("protocol", "tcp"),
         )
 
 
@@ -152,17 +193,16 @@ class ResourceSpec:
     @classmethod
     def from_data(cls, data: dict[str, Any]) -> "ResourceSpec":
         return cls(
-            cpus=_optional_int(data.get("cpus")),
-            memory_mib=_optional_int(data.get("memory_mib")),
+            cpus=data.get("cpus"),
+            memory_mib=data.get("memory_mib"),
         )
 
 
 @dataclass(frozen=True)
-class MachineRecord:
+class MachineSpec:
     name: str
     image: str
-    runner: str
-    created_at: str
+    engine: str
     mounts: tuple[MountSpec, ...] = ()
     ports: tuple[PortBind, ...] = ()
     env: tuple[str, ...] = ()
@@ -176,19 +216,20 @@ class MachineRecord:
     gpu: bool = False
     job_limits: bool = False
     container_args: tuple[str, ...] = ()
+    isolation: IsolationMode = IsolationMode.NATIVE
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", validate_machine_name(self.name))
         object.__setattr__(self, "image", _require_text(self.image, "image"))
-        object.__setattr__(self, "runner", _require_text(self.runner, "runner"))
-        object.__setattr__(
-            self, "created_at", _require_text(self.created_at, "created at")
-        )
+        object.__setattr__(self, "engine", _require_text(self.engine, "engine"))
+        if self.engine not in {"podman", "docker"}:
+            raise ValueError(f"unsupported engine: {self.engine}")
         object.__setattr__(self, "mounts", tuple(self.mounts))
         object.__setattr__(self, "ports", tuple(self.ports))
         object.__setattr__(self, "env", tuple(_parse_env(value) for value in self.env))
-        object.__setattr__(self, "network", _enum(NetworkMode, self.network))
-        object.__setattr__(self, "identity", _enum(IdentityMode, self.identity))
+        object.__setattr__(self, "network", NetworkMode(self.network))
+        object.__setattr__(self, "identity", IdentityMode(self.identity))
+        object.__setattr__(self, "isolation", IsolationMode(self.isolation))
         object.__setattr__(
             self, "container_args", tuple(str(x) for x in self.container_args)
         )
@@ -199,9 +240,9 @@ class MachineRecord:
 
     def to_data(self) -> dict[str, Any]:
         return {
-            "schema_version": SCHEMA_VERSION,
             "name": self.name,
-            "runner": self.runner,
+            "engine": self.engine,
+            "isolation": self.isolation.value,
             "image": self.image,
             "mounts": [m.to_data() for m in self.mounts],
             "ports": [p.to_data() for p in self.ports],
@@ -216,31 +257,27 @@ class MachineRecord:
             "gpu": self.gpu,
             "job_limits": self.job_limits,
             "container_args": list(self.container_args),
-            "created_at": self.created_at,
         }
 
     @classmethod
-    def from_data(cls, data: dict[str, Any]) -> "MachineRecord":
-        schema_version = _int_from_data(data["schema_version"], "schema_version")
-        if schema_version != SCHEMA_VERSION:
-            raise ValueError(f"unsupported machine record schema: {schema_version}")
+    def from_data(cls, data: dict[str, Any]) -> "MachineSpec":
         return cls(
-            name=str(data["name"]),
-            image=str(data["image"]),
-            runner=str(data["runner"]),
-            created_at=str(data["created_at"]),
+            name=data["name"],
+            image=data["image"],
+            engine=data["engine"],
+            isolation=data["isolation"],
             mounts=tuple(MountSpec.from_data(dict(x)) for x in data.get("mounts", [])),
             ports=tuple(PortBind.from_data(dict(x)) for x in data.get("ports", [])),
-            env=tuple(str(x) for x in data.get("env", [])),
+            env=tuple(data.get("env", [])),
             workdir=data.get("workdir"),
             shell=data.get("shell"),
-            network=NetworkMode(str(data.get("network", NetworkMode.DEFAULT.value))),
-            identity=IdentityMode(str(data.get("identity", IdentityMode.IMAGE.value))),
+            network=data.get("network", NetworkMode.DEFAULT.value),
+            identity=data.get("identity", IdentityMode.IMAGE.value),
             resources=ResourceSpec.from_data(dict(data.get("resources", {}))),
-            shell_state=_bool_from_data(data.get("shell_state", True), "shell_state"),
-            ssh_agent=_bool_from_data(data.get("ssh_agent", False), "ssh_agent"),
-            gpu=_bool_from_data(data.get("gpu", False), "gpu"),
-            job_limits=_bool_from_data(data.get("job_limits", False), "job_limits"),
+            shell_state=data.get("shell_state", True),
+            ssh_agent=data.get("ssh_agent", False),
+            gpu=data.get("gpu", False),
+            job_limits=data.get("job_limits", False),
             container_args=tuple(str(x) for x in data.get("container_args", [])),
         )
 
@@ -273,6 +310,246 @@ class RuntimeState(Enum):
     UNKNOWN = "unknown"
 
 
+class Operation(Enum):
+    CREATING = "creating"
+    READY = "ready"
+    DELETING = "deleting"
+
+
+@dataclass(frozen=True)
+class EngineContext:
+    engine: str
+    identity: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        if self.engine not in {"podman", "docker"} or not self.identity:
+            raise ValueError("invalid engine context")
+        identity = tuple(
+            sorted(
+                (_require_text(k, "context key"), _require_text(v, "context value"))
+                for k, v in self.identity
+            )
+        )
+        if len(dict(identity)) != len(identity):
+            raise ValueError("duplicate engine context key")
+        object.__setattr__(self, "identity", identity)
+
+    def to_data(self) -> dict[str, Any]:
+        return {"engine": self.engine, "identity": dict(self.identity)}
+
+    @classmethod
+    def from_data(cls, data: dict[str, Any]) -> "EngineContext":
+        return cls(data["engine"], tuple(dict(data["identity"]).items()))
+
+
+@dataclass(frozen=True)
+class ContainerAllocation:
+    container_id: str
+    context: EngineContext
+    labels: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.container_id, str)
+            or re.fullmatch(r"[a-f0-9]{64}", self.container_id) is None
+        ):
+            raise ValueError("expected a full immutable container ID")
+        if any(
+            not isinstance(k, str) or not isinstance(v, str) for k, v in self.labels
+        ):
+            raise ValueError("ownership labels must contain text")
+        labels = tuple(sorted(self.labels))
+        if (
+            not labels
+            or len(dict(labels)) != len(labels)
+            or dict(labels).get("mimchine") != "1"
+        ):
+            raise ValueError("allocation requires unambiguous ownership labels")
+        object.__setattr__(self, "labels", labels)
+
+    def to_data(self) -> dict[str, Any]:
+        return {
+            "container_id": self.container_id,
+            "context": self.context.to_data(),
+            "labels": dict(self.labels),
+        }
+
+    @classmethod
+    def from_data(cls, data: dict[str, Any]) -> "ContainerAllocation":
+        return cls(
+            data["container_id"],
+            EngineContext.from_data(data["context"]),
+            tuple(dict(data["labels"]).items()),
+        )
+
+
+@dataclass(frozen=True)
+class MachineBinding:
+    allocation: ContainerAllocation
+    image_id: str
+    runtime: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "image_id", _require_text(self.image_id, "image ID"))
+        object.__setattr__(self, "runtime", _require_text(self.runtime, "OCI runtime"))
+
+    def to_data(self) -> dict[str, Any]:
+        return {
+            "allocation": self.allocation.to_data(),
+            "image_id": self.image_id,
+            "runtime": self.runtime,
+        }
+
+    @classmethod
+    def from_data(cls, data: dict[str, Any]) -> "MachineBinding":
+        return cls(
+            ContainerAllocation.from_data(data["allocation"]),
+            data["image_id"],
+            data["runtime"],
+        )
+
+
+@dataclass(frozen=True)
+class MachineObservation:
+    container_id: str
+    context: EngineContext
+    image_id: str
+    runtime: str
+    labels: tuple[tuple[str, str], ...]
+    state: RuntimeState
+    configuration: str = "{}"
+
+    def verify(
+        self, target: ContainerAllocation, binding: MachineBinding | None = None
+    ) -> None:
+        if self.context != target.context:
+            raise ValueError("engine context does not match the machine binding")
+        if self.container_id != target.container_id:
+            raise ValueError("container ID does not match the machine binding")
+        if any(dict(self.labels).get(key) != value for key, value in target.labels):
+            raise ValueError("container ownership does not match the machine binding")
+        if binding is not None:
+            if self.image_id != binding.image_id:
+                raise ValueError("container image does not match the machine binding")
+            if self.runtime != binding.runtime:
+                raise ValueError("OCI runtime does not match the machine binding")
+
+
+@dataclass(frozen=True)
+class MissingContainer:
+    # Absence is meaningful only in the engine context that was queried.
+    context: EngineContext
+
+
+def verify_observation(
+    observed: MachineObservation | MissingContainer,
+    target: ContainerAllocation,
+    binding: MachineBinding | None = None,
+) -> MachineObservation | None:
+    if observed.context != target.context:
+        raise ValueError("engine context does not match the machine binding")
+    if isinstance(observed, MissingContainer):
+        return None
+    observed.verify(target, binding)
+    return observed
+
+
+@dataclass(frozen=True)
+class Machine:
+    id: str
+    spec: MachineSpec
+    created_at: str
+    operation: Operation = Operation.CREATING
+    binding: MachineBinding | None = None
+    allocation: ContainerAllocation | None = None
+    error: str | None = None
+    creation_context: EngineContext | None = None
+
+    def __post_init__(self) -> None:
+        _require_text(self.id, "machine ID")
+        if str(UUID(self.id)) != self.id:
+            raise ValueError("machine ID must be a canonical UUID")
+        object.__setattr__(
+            self, "created_at", _require_text(self.created_at, "created at")
+        )
+        object.__setattr__(self, "operation", Operation(self.operation))
+        if self.binding is not None and self.allocation is not None:
+            raise ValueError(
+                "machine cannot have both a pending allocation and a binding"
+            )
+        if self.operation is Operation.READY and self.binding is None:
+            raise ValueError("ready machine requires a binding")
+        if self.operation is Operation.CREATING and self.binding is not None:
+            raise ValueError("creating machine cannot have a completed binding")
+        if self.binding is not None and self.creation_context is not None:
+            raise ValueError("completed machine cannot retain a creation context")
+        if self.target is None and self.creation_context is None:
+            raise ValueError("unallocated machine requires a pinned creation context")
+        if (
+            self.creation_context is not None
+            and self.creation_context.engine != self.spec.engine
+        ):
+            raise ValueError("creation context engine does not match machine intent")
+        if self.target is not None and self.target.context.engine != self.spec.engine:
+            raise ValueError("binding engine does not match machine intent")
+        if self.allocation is not None:
+            if self.creation_context != self.allocation.context:
+                raise ValueError(
+                    "allocation context does not match the creation transaction"
+                )
+            if dict(self.allocation.labels).get("mimchine.id") != self.id:
+                raise ValueError(
+                    "allocation ownership does not match the creation transaction"
+                )
+
+    @property
+    def name(self) -> str:
+        return self.spec.name
+
+    @property
+    def target(self) -> ContainerAllocation | None:
+        return self.binding.allocation if self.binding else self.allocation
+
+    def to_data(self) -> dict[str, Any]:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "id": self.id,
+            "spec": self.spec.to_data(),
+            "created_at": self.created_at,
+            "operation": self.operation.value,
+            "binding": None if self.binding is None else self.binding.to_data(),
+            "allocation": None
+            if self.allocation is None
+            else self.allocation.to_data(),
+            "error": self.error,
+            "creation_context": None
+            if self.creation_context is None
+            else self.creation_context.to_data(),
+        }
+
+    @classmethod
+    def from_data(cls, data: dict[str, Any]) -> "Machine":
+        version = data["schema_version"]
+        if type(version) is not int or version != SCHEMA_VERSION:
+            raise ValueError(f"unsupported machine record schema: {version!r}")
+        return cls(
+            id=data["id"],
+            spec=MachineSpec.from_data(data["spec"]),
+            created_at=data["created_at"],
+            operation=data["operation"],
+            binding=None
+            if data["binding"] is None
+            else MachineBinding.from_data(data["binding"]),
+            allocation=None
+            if data["allocation"] is None
+            else ContainerAllocation.from_data(data["allocation"]),
+            error=data.get("error"),
+            creation_context=None
+            if data.get("creation_context") is None
+            else EngineContext.from_data(data["creation_context"]),
+        )
+
+
 def validate_machine_name(name: str) -> str:
     text = _require_text(name, "machine name")
     if MACHINE_NAME_PATTERN.fullmatch(text) is None:
@@ -284,17 +561,20 @@ def validate_machine_name(name: str) -> str:
 
 
 def _parse_env(value: str) -> str:
-    text = value.strip()
-    if "=" not in text:
+    if not isinstance(value, str) or "\0" in value:
+        raise ValueError("environment value must be a string without NUL bytes")
+    if "=" not in value:
         raise ValueError(f"environment value must be KEY=VALUE: {value}")
-    key, _ = text.split("=", 1)
+    key, _ = value.split("=", 1)
     if not key:
         raise ValueError(f"environment key cannot be empty: {value}")
-    return text
+    return value
 
 
 def _require_text(value: str, label: str) -> str:
-    text = str(value).strip()
+    if not isinstance(value, str) or "\0" in value:
+        raise ValueError(f"{label} must be a string without NUL bytes")
+    text = value.strip()
     if len(text) == 0:
         raise ValueError(f"{label} cannot be empty")
     return text
@@ -302,24 +582,6 @@ def _require_text(value: str, label: str) -> str:
 
 def _normalize_path(path: str | Path) -> Path:
     return Path(os.path.expanduser(str(path))).resolve()
-
-
-def _enum(enum_type: type[Enum], value: Any) -> Any:
-    if isinstance(value, enum_type):
-        return value
-    return enum_type(str(value))
-
-
-def _optional_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    return _int_from_data(value, "integer value")
-
-
-def _int_from_data(value: Any, label: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{label} must be an integer")
-    return value
 
 
 def _validate_port(value: int, label: str) -> None:
@@ -332,9 +594,3 @@ def _validate_port(value: int, label: str) -> None:
 def _validate_bool(value: bool, label: str) -> None:
     if not isinstance(value, bool):
         raise ValueError(f"{label} must be a boolean")
-
-
-def _bool_from_data(value: Any, label: str) -> bool:
-    if not isinstance(value, bool):
-        raise ValueError(f"{label} must be a boolean")
-    return value

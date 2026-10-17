@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
-from mimchine.domain import ExecSpec, IdentityMode, MachineRecord
-from mimchine.job_limits import HELPER_PATH, require_host
-from mimchine.runners.containers import PodmanRunner
-from test_builders_runners import RecordingProcessRunner
+from support import RecordingProcessRunner, make_machine
+
+from mimchine.domain import ExecSpec, IdentityMode
+from mimchine.engines.containers import PodmanEngine
+from mimchine.job_limits import HELPER_PATH, SETUP_SCRIPT, require_host
+from mimchine.process import ProcessError, ProcessResult
 
 
 def host_info(**overrides):
@@ -37,18 +39,16 @@ def test_rejects_hosts_without_required_delegation(monkeypatch, override):
 
 
 def record(**kwargs):
-    return MachineRecord(
-        "dev", "app:dev", "podman", "test", identity=IdentityMode.ROOT, **kwargs
-    )
+    return make_machine(image="app:dev", identity=IdentityMode.ROOT, **kwargs)
 
 
 def test_creation_delegates_only_private_cgroups(monkeypatch, tmp_path):
-    monkeypatch.setattr("mimchine.runners.containers.require_host", lambda info: None)
+    monkeypatch.setattr("mimchine.engines.containers.require_host", lambda info: None)
     monkeypatch.setattr(
-        "mimchine.runners.containers.helper_mount_source", lambda: tmp_path / "helper"
+        "mimchine.engines.containers.helper_mount_source", lambda: tmp_path / "helper"
     )
     process = RecordingProcessRunner(stdout="{}")
-    PodmanRunner(process).create(record(job_limits=True))
+    PodmanEngine(process).allocate(record(job_limits=True))
     command = process.calls[-1]
     assert "--cgroupns=private" in command
     assert "--security-opt=unmask=/sys/fs/cgroup" in command
@@ -65,7 +65,7 @@ def test_creation_delegates_only_private_cgroups(monkeypatch, tmp_path):
 
 def test_memory_cap_requires_opt_in_and_keeps_arguments():
     process = RecordingProcessRunner()
-    runner = PodmanRunner(process)
+    runner = PodmanEngine(process)
     spec = ExecSpec(("printf", "%s", "spaces; $literal"), memory_mib=64)
     with pytest.raises(ValueError, match="--job-limits"):
         runner.exec(record(), spec)
@@ -80,6 +80,33 @@ def test_memory_cap_requires_opt_in_and_keeps_arguments():
         "%s",
         "spaces; $literal",
     )
+
+
+def test_failed_setup_blocks_dispatch_and_is_retried_for_a_running_machine():
+    process = RecordingProcessRunner()
+    engine = PodmanEngine(process)
+    machine = record(job_limits=True)
+    engine.start(machine)
+    run = process.run
+    fail_setup = True
+
+    def prepare(args, **kwargs):
+        result = run(args, **kwargs)
+        if SETUP_SCRIPT in args and fail_setup:
+            raise ProcessError(
+                ProcessResult(tuple(args), 1, stderr="delegation failed")
+            )
+        return result
+
+    process.run = prepare
+    command = ExecSpec(("printf", "payload"), memory_mib=64)
+    with pytest.raises(ProcessError):
+        engine.exec(machine, command)
+    assert not any("payload" in call for call in process.calls)
+    fail_setup = False
+    engine.exec(machine, command)
+    assert process.calls[-1][-2:] == ("printf", "payload")
+    assert sum(SETUP_SCRIPT in call for call in process.calls) == 2
 
 
 @pytest.mark.parametrize(

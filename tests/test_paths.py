@@ -26,7 +26,7 @@ def test_xdg_app_dirs_use_env_override(
         "data": tmp_path / "xdg-data" / "mimchine",
         "cache": tmp_path / "xdg-cache" / "mimchine",
     }
-    assert all(path.exists() for path in paths.values())
+    assert all(not path.exists() for path in paths.values())
 
 
 def test_xdg_app_dirs_fall_back_to_home(
@@ -49,4 +49,4 @@ def test_xdg_app_dirs_fall_back_to_home(
         "data": tmp_path / ".local" / "share" / "mimchine",
         "cache": tmp_path / ".cache" / "mimchine",
     }
-    assert all(path.exists() for path in paths.values())
+    assert all(not path.exists() for path in paths.values())

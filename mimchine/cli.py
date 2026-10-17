@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Optional
@@ -8,7 +9,13 @@ import typer
 
 from . import __VERSION__
 from .constants import APP_NAME
-from .domain import ExecSpec, IdentityMode, NetworkMode
+from .domain import (
+    ExecSpec,
+    IdentityMode,
+    IsolationMode,
+    MachineObservation,
+    NetworkMode,
+)
 from .gpu import inspect_gpu_host
 from .log import configure_logging, logger
 from .output import (
@@ -156,7 +163,7 @@ def create(
         [],
         "--port",
         "-p",
-        help="Publish TCP port as HOST:GUEST.",
+        help="Publish HOST:GUEST or ADDRESS:HOST:GUEST, optionally /tcp or /udp.",
     ),
     env: list[str] = typer.Option(
         [],
@@ -217,34 +224,47 @@ def create(
         "--start",
         help="Start the machine after creating it.",
     ),
+    isolation: Optional[IsolationMode] = typer.Option(
+        None, "--isolation", help="Isolation policy: native or gvisor (plan only)."
+    ),
+    plan: bool = typer.Option(
+        False,
+        "--plan",
+        help="Print an offline JSON plan; do not run engines or write state.",
+    ),
 ) -> None:
-    _run(
-        lambda: MachineService.default().create(
-            CreateOptions(
-                name=name,
-                image=image,
-                runner=runner,
-                profile=profile,
-                workspaces=tuple(workspaces),
-                home_shares=tuple(home_shares),
-                mounts=tuple(mounts),
-                ports=tuple(ports),
-                env=tuple(env),
-                workdir=workdir,
-                shell=shell,
-                network=_network_from_flags(net, no_net, host_net),
-                ssh_agent=_optional_bool_flag(ssh_agent, no_ssh_agent, "ssh-agent"),
-                gpu=_optional_bool_flag(gpu, no_gpu, "gpu"),
-                job_limits=job_limits,
-                cpus=cpus,
-                memory_mib=mem,
-                identity=_identity_from_flags(root, host_user),
-                shell_state=shell_state,
-                container_args=tuple(container_args),
-                start=start_machine,
-            )
+    def action() -> None:
+        options = CreateOptions(
+            name=name,
+            image=image,
+            runner=runner,
+            profile=profile,
+            workspaces=tuple(workspaces),
+            home_shares=tuple(home_shares),
+            mounts=tuple(mounts),
+            ports=tuple(ports),
+            env=tuple(env),
+            workdir=workdir,
+            shell=shell,
+            network=_network_from_flags(net, no_net, host_net),
+            ssh_agent=_optional_bool_flag(ssh_agent, no_ssh_agent, "ssh-agent"),
+            gpu=_optional_bool_flag(gpu, no_gpu, "gpu"),
+            job_limits=job_limits,
+            cpus=cpus,
+            memory_mib=mem,
+            identity=_identity_from_flags(root, host_user),
+            shell_state=shell_state,
+            container_args=tuple(container_args),
+            start=start_machine,
+            isolation=isolation,
         )
-    )
+        service = MachineService.default()
+        if plan:
+            typer.echo(json.dumps(service.plan(options).to_data(), indent=2))
+        else:
+            service.create(options)
+
+    _run(action)
 
 
 @app.command(no_args_is_help=True)
@@ -433,24 +453,101 @@ def list_machines() -> None:
 
 
 @app.command(no_args_is_help=True)
+def recover(
+    name: str = typer.Argument(..., help="Machine with an incomplete creation."),
+) -> None:
+    _run(lambda: MachineService.default().recover(name))
+
+
+@app.command(no_args_is_help=True)
+def migrate(
+    name: str = typer.Argument(..., help="Existing schema-2 machine to adopt."),
+    plan: bool = typer.Option(
+        False, "--plan", help="Inspect only this container and print an adoption plan."
+    ),
+    apply: Optional[Path] = typer.Option(
+        None,
+        "--apply",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="Apply a previously reviewed JSON adoption plan.",
+    ),
+) -> None:
+    def action() -> None:
+        # Old-format decoding is loaded only for explicit migration.
+        from .migration import MigrationPlan, MigrationService
+        from .paths import data_dir
+        from .state import MachineStore
+
+        if plan == (apply is not None):
+            raise ValueError("choose exactly one of --plan or --apply PLAN.json")
+        service = MigrationService(MachineStore(data_dir() / "machines"))
+        if plan:
+            typer.echo(json.dumps(service.plan(name).to_data(), indent=2))
+        else:
+            adopted = service.apply(
+                name, MigrationPlan.from_data(json.loads(apply.read_text()))
+            )
+            logger.info(
+                "adopted [%s] as container [%s] without changing it",
+                name,
+                adopted.target.container_id,
+            )
+
+    _run(action)
+
+
+@app.command(no_args_is_help=True)
 def inspect(name: str = typer.Argument(..., help="Machine name.")) -> None:
     def action() -> None:
         service = MachineService.default()
         view = service.inspect(name)
-        record = view.record
+        machine = view.machine
+        spec = machine.spec
         print_key_value_table(
-            f"mimchine {record.name}",
+            f"mimchine {spec.name}",
             [
-                ("name", record.name),
-                ("runner", record.runner),
+                ("name", spec.name),
+                ("runner", spec.engine),
+                ("isolation", spec.isolation.value),
+                ("operation", machine.operation.value),
+                (
+                    "container ID",
+                    machine.target.container_id if machine.target else "unallocated",
+                ),
+                (
+                    "bound runtime",
+                    machine.binding.runtime if machine.binding else "unbound",
+                ),
+                (
+                    "observed runtime",
+                    view.observation.runtime
+                    if isinstance(view.observation, MachineObservation)
+                    else "unavailable",
+                ),
+                (
+                    "bound context",
+                    json.dumps(machine.target.context.to_data())
+                    if machine.target
+                    else json.dumps(machine.creation_context.to_data()),
+                ),
+                (
+                    "observed context",
+                    json.dumps(view.observation.context.to_data())
+                    if view.observation
+                    else "unavailable",
+                ),
+                ("problem", view.problem or ""),
+                ("saved failure", machine.error or ""),
                 ("state", view.state.value),
-                ("image", record.image),
-                ("network", record.network.value),
-                ("workdir", record.workdir or ""),
-                ("shell", record.shell or service.config.defaults.shell or "auto"),
-                ("gpu", "yes" if record.gpu else "no"),
-                ("job limits", "yes" if record.job_limits else "no"),
-                ("created", record.created_at),
+                ("image", spec.image),
+                ("network", spec.network.value),
+                ("workdir", spec.workdir or ""),
+                ("shell", spec.shell or service.config.defaults.shell or "auto"),
+                ("gpu", "yes" if spec.gpu else "no"),
+                ("job limits", "yes" if spec.job_limits else "no"),
+                ("created", machine.created_at),
             ],
         )
         print_table(
@@ -458,13 +555,21 @@ def inspect(name: str = typer.Argument(..., help="Machine name.")) -> None:
             ["source", "target", "mode", "kind"],
             [
                 (str(mount.source), mount.target, mount.mode, mount.kind)
-                for mount in record.mounts
+                for mount in spec.mounts
             ],
         )
         print_table(
             "ports",
-            ["host", "guest"],
-            [(str(port.host), str(port.guest)) for port in record.ports],
+            ["address", "host", "guest", "protocol"],
+            [
+                (
+                    port.address or "engine default",
+                    str(port.host),
+                    str(port.guest),
+                    port.protocol,
+                )
+                for port in spec.ports
+            ],
         )
 
     _run(action)
@@ -480,7 +585,7 @@ def _run(action) -> None:
         message = exc.result.stderr.strip() or str(exc)
         logger.error(message)
         raise typer.Exit(exc.result.returncode) from exc
-    except ValueError as exc:
+    except (ValueError, KeyError, TypeError, OSError) as exc:
         logger.error(str(exc))
         raise typer.Exit(1) from exc
 

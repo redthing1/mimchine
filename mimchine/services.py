@@ -1,24 +1,35 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable, TypeVar
+from uuid import uuid4
 
 from .builders import Builder, get_builder
 from .config import AppConfig, Defaults, load_config, validate_builder, validate_runner
 from .domain import (
     BuildSpec,
+    ContainerAllocation,
     ExecSpec,
     IdentityMode,
-    MachineRecord,
+    IsolationMode,
+    Machine,
+    MachineBinding,
+    MachineObservation,
+    MachineSpec,
+    MissingContainer,
     MountSpec,
     NetworkMode,
+    Operation,
     PortBind,
     ResourceSpec,
     RuntimeState,
+    verify_observation,
 )
+from .engines import Engine, get_engine
+from .isolation import GVISOR_NOT_QUALIFIED, MachinePlan, plan_machine
 from .log import logger
 from .mounts import (
     map_host_path_to_guest,
@@ -26,13 +37,11 @@ from .mounts import (
     parse_mount_spec,
     parse_workspace_spec,
 )
-from .paths import data_dir
+from .paths import cache_dir, config_dir, data_dir
 from .profiles import Profile, load_profile
-from .runners import Runner, get_runner
-from .shells import enter_shell_command, normalize_shell
 from .shell_state import ShellStateManager
+from .shells import enter_shell_command, normalize_shell
 from .state import MachineStore
-
 
 T = TypeVar("T")
 
@@ -71,12 +80,22 @@ class CreateOptions:
     shell_state: bool | None = None
     container_args: tuple[str, ...] = ()
     start: bool = False
+    isolation: IsolationMode | None = None
 
 
 @dataclass(frozen=True)
 class MachineView:
-    record: MachineRecord
+    machine: Machine
     state: RuntimeState
+    problem: str | None = None
+    observation: MachineObservation | MissingContainer | None = None
+
+
+@dataclass(frozen=True)
+class MachineSummary:
+    name: str
+    view: MachineView | None = None
+    problem: str | None = None
 
 
 class BuildService:
@@ -108,12 +127,10 @@ class MachineService:
         config: AppConfig,
         store: MachineStore,
         shell_state: ShellStateManager,
-        runners: dict[str, Runner] | None = None,
+        engines: dict[str, Engine] | None = None,
     ):
-        self.config = config
-        self.store = store
-        self.shell_state = shell_state
-        self.runners = runners or {}
+        self.config, self.store, self.shell_state = config, store, shell_state
+        self.engines = engines or {}
 
     @classmethod
     def default(cls) -> "MachineService":
@@ -124,99 +141,194 @@ class MachineService:
             ShellStateManager(app_data / "shell-state"),
         )
 
-    def create(self, options: CreateOptions) -> MachineRecord:
-        if self.store.exists(options.name):
-            raise ValueError(f"machine [{options.name}] already exists")
-
-        profile = load_profile(self.config, options.profile)
-        shell_state_enabled = _bool_option(
-            options.shell_state,
-            profile.shell_state,
-            True,
-        )
-        shell_state_preexisted = (
-            shell_state_enabled and self.shell_state.path_for(options.name).exists()
-        )
-        record = self._record_from_options(options, profile, shell_state_enabled)
-        runner = self._runner(record.runner)
-        _validate_create(record, runner)
-
-        try:
-            if record.shell_state:
-                self.shell_state.ensure(record.name)
-            runner.create(record)
-        except Exception:
-            _delete_created_shell_state(
-                self.shell_state, record, shell_state_preexisted
+    def create(self, options: CreateOptions) -> Machine:
+        spec = self._resolve(options)
+        self._plan(spec)
+        _require_executable(spec)
+        engine = self._engine(spec.engine)
+        with self.store.lock(spec.name):
+            if self.store.exists(spec.name):
+                raise ValueError(f"machine [{spec.name}] already exists")
+            machine = Machine(
+                str(uuid4()), spec, _now(), creation_context=engine.context()
             )
-            raise
+            self.store.save(machine)
+            try:
+                if spec.shell_state:
+                    self.shell_state.ensure(spec.name)
+                allocation = engine.allocate(machine)
+                machine = replace(machine, allocation=allocation)
+                self.store.save(machine)
+                machine = self._complete_creation(machine, engine)
+                if options.start:
+                    self._ensure_running(machine, engine)
+                return machine
+            except Exception as exc:
+                self._remember_error(machine, exc)
+                raise
 
-        try:
-            self.store.save(record)
-        except Exception:
-            _try_delete_machine(runner, record)
-            _delete_created_shell_state(
-                self.shell_state, record, shell_state_preexisted
-            )
-            raise
-        if options.start:
-            _ensure_running(record, runner)
-        return record
+    def _complete_creation(self, machine: Machine, engine: Engine) -> Machine:
+        observation = self._observe(machine, engine)
+        if observation is None:
+            raise ValueError(f"allocated container for [{machine.name}] is missing")
+        binding = MachineBinding(
+            machine.target, observation.image_id, observation.runtime
+        )
+        machine = replace(
+            machine,
+            binding=binding,
+            allocation=None,
+            operation=Operation.READY,
+            error=None,
+            creation_context=None,
+        )
+        self.store.save(machine)
+        return machine
+
+    def recover(self, name: str) -> Machine:
+        with self.store.lock(name):
+            machine = self.store.load(name)
+            _require_executable(machine.spec)
+            engine = self._engine(machine.spec.engine)
+            if machine.operation is Operation.DELETING:
+                raise ValueError(
+                    f"machine [{name}] has an incomplete deletion; retry mim delete"
+                )
+            if machine.operation is Operation.READY:
+                if self._observe(machine, engine) is None:
+                    raise ValueError(
+                        "bound container is missing; recovery did not replace it"
+                    )
+                return machine
+            if machine.target is None:
+                machine = self._recover_allocation(machine, engine)
+                if machine.target is None:
+                    raise ValueError(
+                        f"no allocated object for [{name}]; delete the incomplete reservation"
+                    )
+            return self._complete_creation(machine, engine)
+
+    def _recover_allocation(self, machine: Machine, engine: Engine) -> Machine:
+        # Only an unfinished allocation transaction may resolve its reserved
+        # name, and only with its unique creation ownership token.
+        observed = engine.observe(machine.name)
+        if observed.context != machine.creation_context:
+            raise ValueError("engine context does not match the creation transaction")
+        if isinstance(observed, MissingContainer):
+            return machine
+        labels = (("mimchine", "1"), ("mimchine.id", machine.id))
+        allocation = ContainerAllocation(
+            observed.container_id, observed.context, labels
+        )
+        observed.verify(allocation)
+        machine = replace(machine, allocation=allocation)
+        self.store.save(machine)
+        return machine
+
+    def plan(self, options: CreateOptions) -> MachinePlan:
+        return self._plan(self._resolve(options))
+
+    def _plan(self, spec: MachineSpec) -> MachinePlan:
+        _validate_create(spec)
+        return plan_machine(
+            spec,
+            self.config.gvisor,
+            protected_paths=(
+                config_dir(),
+                data_dir(),
+                cache_dir(),
+                self.store.base_dir,
+                self.shell_state.base_dir,
+                Path(__file__).resolve().parent,
+                config_dir().parent / "containers",
+                data_dir().parent / "containers",
+                Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"),
+            ),
+            history_mount=self.shell_state.mount_for(spec.name)
+            if spec.shell_state
+            else None,
+        )
 
     def start(self, name: str) -> RuntimeState:
-        record = self.store.load(name)
-        runner = self._runner(record.runner)
-        return _ensure_running(record, runner)
+        with self.store.lock(name):
+            machine = self.store.load(name)
+            return self._ensure_running(machine, self._engine(machine.spec.engine))
 
     def stop(self, name: str) -> RuntimeState:
-        record = self.store.load(name)
-        runner = self._runner(record.runner)
-        state = runner.inspect(record)
-        if state is RuntimeState.RUNNING:
-            runner.stop(record)
-        return runner.inspect(record)
+        with self.store.lock(name):
+            machine = self.store.load(name)
+            engine = self._engine(machine.spec.engine)
+            observed = self._observe(machine, engine, strict=False)
+            if observed is not None and observed.state is RuntimeState.RUNNING:
+                engine.stop(machine)
+            observed = self._observe(machine, engine, strict=False)
+            if observed is not None and observed.state is not RuntimeState.STOPPED:
+                raise ValueError(f"machine [{name}] did not reach a stopped state")
+            return RuntimeState.MISSING if observed is None else observed.state
 
     def delete(self, name: str, *, keep_shell_state: bool = False) -> None:
-        record = self.store.load(name)
-        self._runner(record.runner).delete(record)
-        self.store.delete(name)
-        if not keep_shell_state:
-            self.shell_state.delete(name)
+        with self.store.lock(name):
+            machine = self.store.load(name)
+            engine = self._engine(machine.spec.engine)
+            if machine.target is None:
+                machine = self._recover_allocation(machine, engine)
+            observed = (
+                self._observe(machine, engine, strict=False)
+                if machine.target is not None
+                else None
+            )
+            machine = replace(machine, operation=Operation.DELETING, error=None)
+            self.store.save(machine)
+            try:
+                if observed is not None:
+                    engine.delete(machine)
+                    if self._observe(machine, engine, strict=False) is not None:
+                        raise ValueError(
+                            "container removal was not confirmed; binding retained"
+                        )
+                if not keep_shell_state:
+                    self.shell_state.delete(name)
+                self.store.delete(name)
+            except Exception as exc:
+                self._remember_error(machine, exc)
+                raise
+
+    def _execution_machine(
+        self, name: str, *, memory_mib: int | None = None
+    ) -> Machine:
+        # Lock preparation, not an interactive session: independent exec/SSH
+        # sessions must remain concurrent. Engines recheck binding at dispatch.
+        with self.store.lock(name):
+            machine = self.store.load(name)
+            if memory_mib is not None and not machine.spec.job_limits:
+                raise ValueError(
+                    "command memory limits require creation with --job-limits"
+                )
+            self._ensure_running(machine, self._engine(machine.spec.engine))
+            return machine
 
     def enter(self, name: str, shell: str | None = None) -> None:
-        record = self.store.load(name)
-        runner = self._runner(record.runner)
-        _ensure_running(record, runner)
-
-        selected_shell = shell or record.shell or self.config.defaults.shell
-        shell_command = enter_shell_command(selected_shell)
-        exec_env = [
-            f"MIM_MACHINE={record.name}",
-            f"MIM_RUNNER={record.runner}",
-            f"MIM_SHELL_STATE={int(record.shell_state)}",
-        ]
+        machine = self._execution_machine(name)
+        spec = machine.spec
+        env = list(_session_env(spec))
         for variable in ("TERM", "COLORTERM"):
             if value := os.environ.get(variable):
-                exec_env.append(f"{variable}={value}")
-        workdir = _mapped_cwd(record.mounts) or _session_workdir(record)
-        runner.exec(
-            record,
+                env.append(f"{variable}={value}")
+        self._engine(spec.engine).exec(
+            machine,
             ExecSpec(
-                command=shell_command,
+                enter_shell_command(shell or spec.shell or self.config.defaults.shell),
                 interactive=True,
                 tty=True,
-                env=tuple(exec_env),
-                workdir=workdir,
+                env=tuple(env),
+                workdir=_mapped_cwd(spec.mounts) or _session_workdir(spec),
             ),
         )
 
     def exec(self, name: str, spec: ExecSpec) -> None:
-        record = self.store.load(name)
-        if spec.memory_mib is not None and not record.job_limits:
-            raise ValueError("command memory limits require creation with --job-limits")
-        runner = self._runner(record.runner)
-        _ensure_running(record, runner)
-        runner.exec(record, spec)
+        # Reject unsupported requests before starting a stopped machine.
+        machine = self._execution_machine(name, memory_mib=spec.memory_mib)
+        self._engine(machine.spec.engine).exec(machine, spec)
 
     def ssh_session(
         self,
@@ -226,54 +338,108 @@ class MachineService:
         tty: bool,
         term: str | None = None,
     ) -> None:
-        record = self.store.load(name)
-        runner = self._runner(record.runner)
-        _ensure_running(record, runner)
-
-        env = [
-            f"MIM_MACHINE={record.name}",
-            f"MIM_RUNNER={record.runner}",
-            f"MIM_SHELL_STATE={int(record.shell_state)}",
-        ]
-        if term:
-            env.append(f"TERM={term}")
-
-        if original_command is None:
-            selected_shell = record.shell or self.config.defaults.shell
-            command = enter_shell_command(selected_shell)
-        else:
-            command = ("sh", "-c", original_command)
-
-        runner.exec(
-            record,
+        machine = self._execution_machine(name)
+        spec = machine.spec
+        env = (*_session_env(spec), *((f"TERM={term}",) if term else ()))
+        command = (
+            enter_shell_command(spec.shell or self.config.defaults.shell)
+            if original_command is None
+            else ("sh", "-c", original_command)
+        )
+        self._engine(spec.engine).exec(
+            machine,
             ExecSpec(
-                command=command,
+                command,
                 interactive=True,
                 tty=tty,
-                env=tuple(env),
-                workdir=_session_workdir(record),
+                env=env,
+                workdir=_session_workdir(spec),
             ),
         )
 
+    def _observe(
+        self, machine: Machine, engine: Engine, *, strict: bool = True
+    ) -> MachineObservation | None:
+        if machine.target is None:
+            raise ValueError(
+                f"machine [{machine.name}] needs recovery before observation"
+            )
+        return verify_observation(
+            engine.observe(machine.target.container_id),
+            machine.target,
+            machine.binding if strict else None,
+        )
+
+    def _ensure_running(self, machine: Machine, engine: Engine) -> RuntimeState:
+        _require_executable(machine.spec)
+        if machine.operation is not Operation.READY:
+            raise ValueError(
+                f"machine [{machine.name}] is {machine.operation.value}; recover or finish deletion first"
+            )
+        observed = self._observe(machine, engine)
+        if observed is None:
+            raise ValueError(
+                f"machine [{machine.name}] is missing; its binding has been retained"
+            )
+        if observed.state is RuntimeState.STOPPED:
+            engine.start(machine)
+            observed = self._observe(machine, engine)
+            if observed is None or observed.state is not RuntimeState.RUNNING:
+                raise ValueError(f"machine [{machine.name}] failed to start")
+        elif observed.state is not RuntimeState.RUNNING:
+            raise ValueError(f"machine [{machine.name}] state is unknown")
+        if machine.error:
+            self.store.save(replace(machine, error=None))
+        return RuntimeState.RUNNING
+
     def inspect(self, name: str) -> MachineView:
-        return self._view(self.store.load(name))
+        with self.store.lock(name):
+            machine = self.store.load(name)
+            if machine.target is None:
+                return MachineView(
+                    machine,
+                    RuntimeState.UNKNOWN,
+                    machine.error or "creation needs recovery",
+                )
+            snapshot = None
+            try:
+                snapshot = self._engine(machine.spec.engine).observe(
+                    machine.target.container_id
+                )
+                observed = verify_observation(snapshot, machine.target, machine.binding)
+                return MachineView(
+                    machine,
+                    RuntimeState.MISSING if observed is None else observed.state,
+                    machine.error if machine.operation is not Operation.READY else None,
+                    snapshot,
+                )
+            except (ValueError, RuntimeError, OSError) as exc:
+                return MachineView(machine, RuntimeState.UNKNOWN, str(exc), snapshot)
 
-    def list(self) -> list[MachineView]:
-        return [self._view(record) for record in self.store.list()]
+    def list(self) -> list[MachineSummary]:
+        rows = []
+        for name in self.store.names():
+            try:
+                rows.append(MachineSummary(name, self.inspect(name)))
+            except (ValueError, KeyError, TypeError, OSError) as exc:
+                # Listing can explain an unreadable record without decoding an
+                # older execution model or hiding other healthy machines.
+                rows.append(MachineSummary(name, problem=str(exc)))
+        return rows
 
-    def _view(self, record: MachineRecord) -> MachineView:
-        return MachineView(record, self._runner(record.runner).inspect(record))
+    def _remember_error(self, machine: Machine, error: Exception) -> None:
+        try:
+            self.store.save(replace(machine, error=str(error)))
+        except Exception as exc:
+            logger.warning(
+                "could not persist recovery state for [%s]: %s", machine.name, exc
+            )
 
-    def _runner(self, name: str) -> Runner:
-        runner_name = validate_runner(name)
-        return self.runners.get(runner_name) or get_runner(runner_name)
+    def _engine(self, name: str) -> Engine:
+        return self.engines.get(name) or get_engine(name)
 
-    def _record_from_options(
-        self,
-        options: CreateOptions,
-        profile: Profile,
-        shell_state_enabled: bool,
-    ) -> MachineRecord:
+    def _resolve(self, options: CreateOptions) -> MachineSpec:
+        profile = load_profile(self.config, options.profile)
         image = _first(options.image, profile.image)
         if image is None:
             raise ValueError("image is required")
@@ -292,14 +458,19 @@ class MachineService:
         )
         resources = _resource_spec(options, profile, self.config.defaults)
         mounts = _mounts(options, profile)
+        shell_state_enabled = _bool_option(
+            options.shell_state, profile.shell_state, True
+        )
         if shell_state_enabled:
             mounts = (*mounts, self.shell_state.mount_for(options.name))
 
-        return MachineRecord(
+        return MachineSpec(
             name=options.name,
             image=image,
-            runner=runner,
-            created_at=_now(),
+            engine=runner,
+            isolation=_first(
+                options.isolation, profile.isolation, self.config.defaults.isolation
+            ),
             mounts=mounts,
             ports=_ports(options, profile),
             env=_env(options, profile),
@@ -328,52 +499,28 @@ class MachineService:
         )
 
 
-def _validate_create(record: MachineRecord, runner: Runner) -> None:
-    if record.job_limits and runner.name != "podman":
+def _validate_create(spec: MachineSpec) -> None:
+    if spec.job_limits and spec.engine != "podman":
         raise ValueError(
             "job limits require Podman on native Linux with cgroup v2 and crun"
         )
-    if record.ports and record.network is NetworkMode.HOST:
+    if spec.ports and spec.network is NetworkMode.HOST:
         raise ValueError("port publishing cannot be used with host networking")
-    if record.gpu and not runner.supports_gpu:
-        raise ValueError(f"runner [{runner.name}] does not support GPU forwarding")
+    if spec.gpu and spec.engine != "podman":
+        raise ValueError(f"engine [{spec.engine}] does not support GPU forwarding")
 
 
-def _ensure_running(record: MachineRecord, runner: Runner) -> RuntimeState:
-    state = runner.inspect(record)
-    if state is RuntimeState.RUNNING:
-        return state
-    if state is RuntimeState.STOPPED:
-        runner.start(record)
-        state = runner.inspect(record)
-        if state is not RuntimeState.RUNNING:
-            raise ValueError(
-                f"machine [{record.name}] failed to start; state is {state.value}"
-            )
-        return state
-    if state is RuntimeState.MISSING:
-        raise ValueError(f"machine [{record.name}] is missing; delete and recreate it")
-    raise ValueError(f"machine [{record.name}] state is unknown")
+def _require_executable(spec: MachineSpec) -> None:
+    if spec.isolation is IsolationMode.GVISOR:
+        raise ValueError(GVISOR_NOT_QUALIFIED)
 
 
-def _delete_created_shell_state(
-    shell_state: ShellStateManager,
-    record: MachineRecord,
-    preexisted: bool,
-) -> None:
-    if record.shell_state and not preexisted:
-        shell_state.delete(record.name)
-
-
-def _try_delete_machine(runner: Runner, record: MachineRecord) -> None:
-    try:
-        runner.delete(record)
-    except Exception as exc:
-        logger.warning(
-            "failed to clean up machine [%s] after create failure: %s",
-            record.name,
-            exc,
-        )
+def _session_env(spec: MachineSpec) -> tuple[str, ...]:
+    return (
+        f"MIM_MACHINE={spec.name}",
+        f"MIM_RUNNER={spec.engine}",
+        f"MIM_SHELL_STATE={int(spec.shell_state)}",
+    )
 
 
 def _mounts(options: CreateOptions, profile: Profile) -> tuple[MountSpec, ...]:
@@ -440,9 +587,9 @@ def _mapped_cwd(mounts: Iterable[MountSpec]) -> str | None:
     return map_host_path_to_guest(Path.cwd(), tuple(mounts))
 
 
-def _session_workdir(record: MachineRecord) -> str | None:
-    return record.workdir or next(
-        (mount.target for mount in record.mounts if mount.kind == "workspace"),
+def _session_workdir(spec: MachineSpec) -> str | None:
+    return spec.workdir or next(
+        (mount.target for mount in spec.mounts if mount.kind == "workspace"),
         None,
     )
 

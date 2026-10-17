@@ -1,20 +1,13 @@
 # mimchine
 
 Ergonomic named development environments from OCI images. Uses Podman by
-default; Docker is also supported.
-
-## development
-
-```sh
-uv sync --locked
-uv run mim --help
-uv run mim build mim-fed:dev -f demo/mim_fed.docker -C demo
-```
+default on local Linux; Docker is also supported, including on macOS.
 
 ## use
 
 ```sh
-mim create dev --image mim-fed:dev --workspace .
+mim build app:dev -f Containerfile -C .
+mim create dev --image app:dev --workspace .
 mim enter dev
 mim exec dev pwd
 mim stop dev
@@ -26,11 +19,14 @@ Common creation options:
 ```sh
 mim create dev --image app:dev --start
 mim create dev --image app:dev --mount ./cache:/cache:ro
-mim create web --image app:dev --port 8080:80 --net
+mim create web --image app:dev --port 127.0.0.1:8080:80 --net
 mim create git --image app:dev --ssh-agent
 mim create dev --image app:dev --host-user
 mim create dev --image app:dev --runner docker
 ```
+
+See [machine management](docs/machines.md) for inspection, recovery, and
+adopting existing machines.
 
 ## gpu
 
@@ -57,8 +53,8 @@ cpus = 2
 memory = 2048
 
 [profiles.work]
-image = "mim-fed:dev"
-workspace = "."
+image = "app:dev"
+workspace = ".:/work/project"
 env = ["EDITOR=nvim"]
 network = "none"
 identity = "host"
@@ -79,7 +75,7 @@ rsync -a ./src/ work.mim:/work/project/
 mim setup ssh --remove
 ```
 
-SSH uses the runner's exec transport: no guest daemon, port, or network is
+SSH uses the engine's exec transport: no guest daemon, port, or network is
 required. Stopped machines start automatically. `rsync` must exist in the
 image when used.
 
@@ -90,4 +86,34 @@ when deleting a machine with:
 
 ```sh
 mim delete dev -f --keep-shell-state
+```
+
+## command memory limits
+
+With Podman on native Linux, cgroup v2, systemd, and crun:
+
+```sh
+mim create dev --image app:dev --job-limits
+mim exec --memory 512 dev make
+```
+
+The limit is in MiB and covers the command and its descendants.
+
+## isolation plans
+
+Inspect a gVisor policy without invoking an engine or creating a machine:
+
+```sh
+mim create dev --image app:dev --isolation gvisor --plan
+```
+
+gVisor is available for planning only. See [isolation plans](docs/isolation.md)
+for configuration and policy details.
+
+## development
+
+```sh
+uv sync --locked
+uv run mim --help
+uv run mim build mim-fed:dev -f demo/mim_fed.docker -C demo
 ```

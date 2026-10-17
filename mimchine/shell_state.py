@@ -5,13 +5,12 @@ from pathlib import Path
 
 from .domain import MountSpec, validate_machine_name
 
-
 SHELL_STATE_GUEST_DIR = "/mim/shell-state"
 
 
 class ShellStateManager:
     def __init__(self, base_dir: Path):
-        self.base_dir = Path(base_dir)
+        self.base_dir = Path(base_dir).expanduser().absolute()
 
     def path_for(self, machine_name: str) -> Path:
         return self.base_dir / validate_machine_name(machine_name)
@@ -30,4 +29,9 @@ class ShellStateManager:
         )
 
     def delete(self, machine_name: str) -> None:
-        shutil.rmtree(self.path_for(machine_name), ignore_errors=True)
+        path = self.path_for(machine_name)
+        try:
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            if path.exists():
+                raise

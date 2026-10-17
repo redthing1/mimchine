@@ -21,6 +21,4 @@ def cache_dir() -> Path:
 def _xdg_app_dir(env_var: str, fallback: Path) -> Path:
     configured = os.environ.get(env_var)
     base = Path(configured).expanduser() if configured else Path.home() / fallback
-    path = base / APP_NAME
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return base / APP_NAME

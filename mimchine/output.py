@@ -1,7 +1,7 @@
 from rich.console import Console
 from rich.table import Table
 
-from .services import MachineView
+from .services import MachineSummary
 
 _stdout = Console()
 _stderr = Console(stderr=True)
@@ -11,7 +11,7 @@ def print_version(name: str, version: str) -> None:
     _stdout.print(f"{name} v{version}", markup=False, highlight=False)
 
 
-def print_machine_list(rows: list[MachineView]) -> None:
+def print_machine_list(rows: list[MachineSummary]) -> None:
     if len(rows) == 0:
         _stdout.print("no mimchines found", markup=False, highlight=False)
         return
@@ -19,15 +19,27 @@ def print_machine_list(rows: list[MachineView]) -> None:
     table = Table(title=f"mimchines ({len(rows)})")
     table.add_column("name", style="cyan")
     table.add_column("runner")
+    table.add_column("isolation")
     table.add_column("state", style="green")
+    table.add_column("operation")
     table.add_column("image")
+    table.add_column("problem")
 
-    for view in rows:
+    for summary in rows:
+        view = summary.view
+        if view is None:
+            table.add_row(
+                summary.name, "", "", "unknown", "", "", summary.problem or ""
+            )
+            continue
         table.add_row(
-            view.record.name,
-            view.record.runner,
+            view.machine.name,
+            view.machine.spec.engine,
+            view.machine.spec.isolation.value,
             view.state.value,
-            view.record.image,
+            view.machine.operation.value,
+            view.machine.spec.image,
+            view.problem or "",
         )
 
     _stdout.print(table)

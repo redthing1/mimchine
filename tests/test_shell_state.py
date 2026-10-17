@@ -24,3 +24,9 @@ def test_shell_state_delete_removes_state(tmp_path: Path) -> None:
     manager.delete("dev")
 
     assert not state_dir.exists()
+
+
+def test_shell_state_delete_accepts_an_already_absent_directory(tmp_path):
+    manager = ShellStateManager(tmp_path)
+    manager.delete("dev")
+    assert not manager.path_for("dev").exists()

@@ -3,18 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from support import make_machine
 
-from mimchine.domain import MachineRecord
-from mimchine.state import MachineNotFoundError, MachineStore
+from mimchine.state import MachineNotFoundError, MachineStore, MigrationRequiredError
 
 
 def test_machine_store_saves_loads_lists_and_deletes(tmp_path: Path) -> None:
     store = MachineStore(tmp_path)
-    record = MachineRecord(
+    record = make_machine(
         "dev",
         "alpine",
         "podman",
-        created_at="2026-01-01T00:00:00+00:00",
     )
 
     store.save(record)
@@ -53,30 +52,23 @@ def test_machine_store_invalid_json_raises(tmp_path: Path) -> None:
         store.load("bad")
 
 
-def test_machine_store_list_skips_invalid_records(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_machine_store_does_not_hide_migration_needs(tmp_path):
     store = MachineStore(tmp_path)
     path = store.record_path("old")
     path.parent.mkdir(parents=True)
-    path.write_text('{"schema_version": 1}', encoding="utf-8")
-    warnings = []
-    monkeypatch.setattr(
-        "mimchine.state.logger.warning",
-        lambda message, *args: warnings.append(message % args),
-    )
-
-    assert store.list() == []
-    assert warnings == ["skipping machine [old]: unsupported machine record schema: 1"]
+    original = b'{"schema_version": 2}'
+    path.write_bytes(original)
+    with pytest.raises(MigrationRequiredError, match="mim migrate old --plan"):
+        store.list()
+    assert path.read_bytes() == original
 
 
 def test_machine_store_delete_removes_owned_directory(tmp_path: Path) -> None:
     store = MachineStore(tmp_path)
-    record = MachineRecord(
+    record = make_machine(
         "dev",
         "alpine",
         "podman",
-        created_at="2026-01-01T00:00:00+00:00",
     )
     store.save(record)
     (store.machine_dir("dev") / "sidecar").write_text("x", encoding="utf-8")
@@ -94,14 +86,56 @@ def test_machine_store_delete_does_not_hide_filesystem_errors(
 
     store = MachineStore(tmp_path)
     store.save(
-        MachineRecord(
+        make_machine(
             "dev",
             "alpine",
             "podman",
-            created_at="2026-01-01T00:00:00+00:00",
         )
     )
     monkeypatch.setattr("mimchine.state.shutil.rmtree", fail)
 
     with pytest.raises(PermissionError):
         store.delete("dev")
+
+
+def test_failed_atomic_replace_preserves_old_record_and_cleans_temporary_file(
+    tmp_path, monkeypatch
+):
+    from dataclasses import replace
+
+    store = MachineStore(tmp_path)
+    machine = make_machine()
+    store.save(machine)
+    original = store.read("dev")
+
+    def fail_replace(source, destination):
+        raise OSError("atomic replace failed")
+
+    monkeypatch.setattr("mimchine.state.os.replace", fail_replace)
+    with pytest.raises(OSError, match="atomic replace failed"):
+        store.save(replace(machine, error="new failure"))
+    assert store.read("dev") == original
+    assert not list(store.machine_dir("dev").glob(".mim-*"))
+
+
+@pytest.mark.parametrize("version", [None, 1, 4, "2", True, 3.0])
+def test_unsupported_schema_does_not_suggest_an_unavailable_migration(
+    tmp_path, version
+):
+    import json
+
+    store = MachineStore(tmp_path)
+    path = store.record_path("dev")
+    path.parent.mkdir()
+    path.write_text(json.dumps({"schema_version": version}))
+    with pytest.raises(ValueError, match="unsupported machine record schema") as error:
+        store.load("dev")
+    assert not isinstance(error.value, MigrationRequiredError)
+
+
+def test_invalid_lock_name_does_not_create_store_state(tmp_path):
+    store = MachineStore(tmp_path / "machines")
+    with pytest.raises(ValueError):
+        with store.lock("../other"):
+            pytest.fail("invalid lock was acquired")
+    assert not store.base_dir.exists()

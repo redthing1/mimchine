@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .domain import NetworkMode, ResourceSpec
+from .domain import IsolationMode, NetworkMode, ResourceSpec
 from .log import logger
 from .paths import config_dir
 from .shells import normalize_shell
 
-
 SUPPORTED_BUILDERS = ("podman", "docker")
 SUPPORTED_RUNNERS = ("podman", "docker")
-SUPPORTED_TOP_LEVEL_TABLES = ("defaults", "profiles")
+SUPPORTED_TOP_LEVEL_TABLES = ("defaults", "profiles", "runtimes")
 SUPPORTED_DEFAULT_KEYS = (
     "builder",
     "runner",
@@ -21,6 +20,7 @@ SUPPORTED_DEFAULT_KEYS = (
     "shell",
     "cpus",
     "memory",
+    "isolation",
 )
 
 
@@ -31,12 +31,27 @@ class Defaults:
     network: NetworkMode = NetworkMode.DEFAULT
     shell: str | None = None
     resources: ResourceSpec = ResourceSpec()
+    isolation: IsolationMode = IsolationMode.NATIVE
+
+
+@dataclass(frozen=True)
+class GvisorRuntime:
+    # An operator-installed distribution; mim never installs or modifies it.
+    path: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.path is not None:
+            path = Path(self.path).expanduser()
+            if not path.is_absolute():
+                raise ValueError("gVisor runtime path must be absolute")
+            object.__setattr__(self, "path", path)
 
 
 @dataclass(frozen=True)
 class AppConfig:
     defaults: Defaults
     profiles: dict[str, dict[str, Any]]
+    gvisor: GvisorRuntime = field(default_factory=GvisorRuntime)
 
 
 DEFAULT_CONFIG_TOML = """[defaults]
@@ -65,7 +80,6 @@ def create_default_config(path: Path | None = None) -> None:
 def load_config(path: Path | None = None) -> AppConfig:
     config_path = path or get_config_path()
     if not config_path.exists():
-        create_default_config(config_path)
         return AppConfig(defaults=Defaults(), profiles={})
 
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
@@ -92,7 +106,23 @@ def load_config(path: Path | None = None) -> AppConfig:
             raise ValueError(f"profile [{name}] must be a table")
         normalized_profiles[name.strip()] = profile
 
-    return AppConfig(defaults=defaults, profiles=normalized_profiles)
+    return AppConfig(
+        defaults=defaults,
+        profiles=normalized_profiles,
+        gvisor=_read_gvisor(data.get("runtimes", {})),
+    )
+
+
+def _read_gvisor(data: Any) -> GvisorRuntime:
+    if not isinstance(data, dict) or set(data) - {"gvisor"}:
+        raise ValueError("config field [runtimes] supports only [runtimes.gvisor]")
+    gvisor = data.get("gvisor", {})
+    if not isinstance(gvisor, dict) or set(gvisor) - {"path"}:
+        raise ValueError("config field [runtimes.gvisor] supports only 'path'")
+    path = gvisor.get("path")
+    if path is not None and (not isinstance(path, str) or not path.strip()):
+        raise ValueError("gVisor runtime path must be a non-empty string")
+    return GvisorRuntime(path=None if path is None else Path(path))
 
 
 def _read_defaults(data: Any) -> Defaults:
@@ -123,6 +153,7 @@ def _read_defaults(data: Any) -> Defaults:
             cpus=_optional_int(data.get("cpus")),
             memory_mib=_optional_int(data.get("memory")),
         ),
+        isolation=IsolationMode(str(data.get("isolation", "native"))),
     )
 
 

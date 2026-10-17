@@ -9,14 +9,14 @@ from mimchine.domain import IdentityMode, NetworkMode
 from mimchine.profiles import read_profile
 
 
-def test_load_config_creates_minimal_default(tmp_path: Path) -> None:
+def test_load_config_uses_defaults_without_writing(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
 
     config = load_config(path)
 
     assert config.defaults == Defaults()
     assert config.profiles == {}
-    assert path.read_text(encoding="utf-8").startswith("[defaults]")
+    assert not path.exists()
 
 
 def test_config_shell_auto_means_no_shell_preference(tmp_path: Path) -> None:
