@@ -225,7 +225,7 @@ def create(
         help="Start the machine after creating it.",
     ),
     isolation: Optional[IsolationMode] = typer.Option(
-        None, "--isolation", help="Isolation policy: native or gvisor (plan only)."
+        None, "--isolation", help="Isolation policy: native or gvisor."
     ),
     plan: bool = typer.Option(
         False,

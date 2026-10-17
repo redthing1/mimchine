@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -83,6 +85,19 @@ def verify_runtime(
         if binary.name != "runsc":
             raise ValueError("distribution entry must be named runsc")
         root = binary.parent
+        for directory in (root, *root.parents):
+            metadata = directory.stat()
+            if metadata.st_uid not in (0, os.getuid()) or (
+                metadata.st_mode & 0o022
+                and not (
+                    directory != root
+                    and metadata.st_uid == 0
+                    and metadata.st_mode & stat.S_ISVTX
+                )
+            ):
+                raise ValueError(
+                    f"runtime directory permits untrusted writes: {directory}"
+                )
         manifest_path = root / "manifest.json"
         if (
             manifest_path.is_symlink()
@@ -91,6 +106,7 @@ def verify_runtime(
         ):
             raise ValueError("invalid distribution manifest")
         content = manifest_path.read_bytes()
+        _check_file(manifest_path)
         digest = hashlib.sha256(content).hexdigest()
         if expected_manifest is not None and digest != expected_manifest:
             raise ValueError("distribution manifest differs from the bound identity")
@@ -127,6 +143,15 @@ def verify_runtime(
             installed = root / name
             if installed.resolve(strict=True) != installed or not installed.is_file():
                 raise ValueError(f"distribution file must be a regular file: {name}")
+            _check_file(installed)
+            for directory in installed.parents:
+                if directory == root:
+                    break
+                metadata = directory.stat()
+                if metadata.st_uid not in (0, os.getuid()) or metadata.st_mode & 0o022:
+                    raise ValueError(
+                        f"runtime directory permits untrusted writes: {directory}"
+                    )
             if not isinstance(expected, str) or not re.fullmatch(
                 r"[0-9a-f]{64}", expected
             ):
@@ -169,3 +194,16 @@ def _unique_keys(pairs: list[tuple[str, object]]) -> dict:
             raise ValueError(f"duplicate manifest key: {key}")
         result[key] = value
     return result
+
+
+def _check_file(path: Path) -> None:
+    metadata = path.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid not in (0, os.getuid())
+        or metadata.st_mode & 0o022
+        or metadata.st_nlink != 1
+    ):
+        raise ValueError(
+            f"runtime file must be owned, singly linked and protected from other writers: {path}"
+        )

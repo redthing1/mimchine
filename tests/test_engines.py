@@ -40,7 +40,14 @@ def test_allocate_captures_id_and_ownership(tmp_path):
     assert "--pids-limit=-1" in command
     assert "--tz=local" in command
     assert f"{tmp_path}:/work/dev:rw" in command
-    assert command[-5:] == ("--", "alpine", "sh", "-lc", KEEPALIVE_COMMAND)
+    assert command[-6:] == (
+        "--entrypoint",
+        "/bin/sh",
+        "--",
+        "alpine",
+        "-lc",
+        KEEPALIVE_COMMAND,
+    )
     assert STARTUP_HOOK in KEEPALIVE_COMMAND
     assert all(cwd == "/" for cwd in process.cwd)
 
@@ -65,7 +72,7 @@ def test_native_gpu_and_extra_arguments_are_preserved(monkeypatch):
         identity=IdentityMode.ROOT, gpu=True, container_args=("--cap-drop=all",)
     )
     PodmanEngine(process).allocate(machine)
-    assert process.calls[-1][-8:-5] == (
+    assert process.calls[-1][-9:-6] == (
         "--device",
         "/dev/dri/renderD128",
         "--cap-drop=all",

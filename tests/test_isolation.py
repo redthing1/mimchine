@@ -66,7 +66,7 @@ def test_gvisor_policy_preserves_rootfs_and_host_editable_workspaces(tmp_path):
     plan = gvisor_plan(record)
     data = plan.to_data()
 
-    assert data["status"] == "unqualified"
+    assert data["status"] == "preview"
     assert data["execution_enabled"] is False
     assert plan.create[:2] == ("podman", "--remote=false")
     assert "mimchine.id=<machine-id>" in plan.create
@@ -80,7 +80,7 @@ def test_gvisor_policy_preserves_rootfs_and_host_editable_workspaces(tmp_path):
     assert f"{workspace}:/work/project:rw" in plan.create
     assert plan.create[plan.create.index("--memory") + 1] == "1024m"
     assert plan.create[plan.create.index("--cpus") + 1] == "2"
-    assert "--network=pasta" in plan.create
+    assert "--network=pasta:--no-splice" in plan.create
     assert "<image-uid>" in " ".join(plan.create)
     assert data["machine"]["resources"] == {"cpus": 2, "memory_mib": 1024}
 
@@ -117,7 +117,7 @@ def test_offline_network_does_not_fall_back_to_host_network():
     plan = gvisor_plan(machine(network=NetworkMode.NONE))
 
     assert plan.policy.profile == "offline"
-    assert "--network=pasta" not in plan.create
+    assert "--network=pasta:--no-splice" not in plan.create
     assert plan.create[plan.create.index("--network") + 1] == "none"
 
 
@@ -343,17 +343,18 @@ def test_profile_and_cli_isolation_precedence_without_state_writes(tmp_path):
 
 
 @pytest.mark.parametrize("start", [False, True])
-def test_gvisor_creation_is_blocked_before_any_provisioning(tmp_path, start):
+def test_missing_gvisor_runtime_is_rejected_before_provisioning(tmp_path, start):
     svc = service(tmp_path)
+    svc.config = replace(svc.config, gvisor=GvisorRuntime(tmp_path / "missing/runsc"))
 
-    with pytest.raises(ValueError, match="execution is not enabled"):
+    with pytest.raises(ValueError, match="cannot verify gVisor distribution"):
         svc.create(
             CreateOptions(
                 "dev", image="example:dev", isolation=IsolationMode.GVISOR, start=start
             )
         )
 
-    assert not svc.store.base_dir.exists()
+    assert not svc.store.exists("dev")
     assert not svc.shell_state.base_dir.exists()
 
 
@@ -396,7 +397,7 @@ def test_plan_cli_needs_no_installed_engine_and_creates_no_xdg_state(
     assert result.exit_code == 0, result.output
     data = json.loads(result.stdout)
     assert data["isolation"] == "gvisor"
-    assert data["status"] == "unqualified"
+    assert data["status"] == "preview"
     assert data["execution_enabled"] is False
     assert list(tmp_path.iterdir()) == []
 
@@ -413,3 +414,35 @@ def test_native_preview_preserves_existing_default_network_and_port_semantics():
     assert "127.0.0.1:8080:80" not in plan.create
     assert "--network=pasta" not in plan.create
     assert record.to_data()["isolation"] == "native"
+
+
+def test_offline_gvisor_cannot_publish_ports():
+    with pytest.raises(ValueError, match="publishing requires networking"):
+        gvisor_plan(machine(network=NetworkMode.NONE, ports=(PortBind(8080, 80),)))
+
+
+@pytest.mark.parametrize("agent", [False, True])
+def test_gvisor_grant_destinations_cannot_shadow_each_other(tmp_path, agent):
+    target = "/mim/ssh-agent.sock" if agent else "/work"
+    mounts = (
+        (MountSpec(tmp_path, target),)
+        if agent
+        else (MountSpec(tmp_path, target), MountSpec(tmp_path / "other", target))
+    )
+    with pytest.raises(ValueError, match="destinations must be unique"):
+        gvisor_plan(machine(mounts=mounts, ssh_agent=agent))
+
+
+def test_gvisor_workspace_cannot_modify_host_command_search_path(tmp_path, monkeypatch):
+    directory = tmp_path / "host-bin"
+    directory.mkdir()
+    monkeypatch.setenv("PATH", str(directory))
+    with pytest.raises(ValueError, match="protected control path"):
+        service(tmp_path).plan(
+            CreateOptions(
+                "dev",
+                image="example",
+                isolation=IsolationMode.GVISOR,
+                workspaces=(str(directory),),
+            )
+        )

@@ -4,27 +4,30 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..domain import (
     ContainerAllocation,
     EngineContext,
     ExecSpec,
     IdentityMode,
-    IsolationMode,
+    ImageUser,
     Machine,
     MachineObservation,
     MachineSpec,
     MissingContainer,
+    NetworkMode,
     Operation,
     RuntimeState,
     verify_observation,
 )
 from ..gpu import podman_gpu_args
-from ..isolation import GVISOR_NOT_QUALIFIED
+from ..isolation import PASTA_NETWORK, gvisor_create_args
 from ..job_limits import HELPER_PATH, SETUP_SCRIPT, helper_mount_source, require_host
 from ..process import ProcessError, ProcessRunner
 from .commands import create_command, validate_container_args
+from .gvisor import GvisorSandbox
+from .lifecycle import IDENTITY_PROBE_ARGV, KEEPALIVE_ARGV
 
 NEUTRAL_BACKEND_CWD = "/"
 
@@ -61,18 +64,18 @@ class _ContainerEngine:
 
     def allocate(self, machine: Machine) -> ContainerAllocation:
         spec = machine.spec
-        if spec.isolation is not IsolationMode.NATIVE:
-            raise ValueError(GVISOR_NOT_QUALIFIED)
         validate_container_args(spec.container_args)
         context = self.context()
         if machine.creation_context is not None and machine.creation_context != context:
             raise ValueError("engine context changed during container allocation")
+        if machine.gvisor:
+            return self._allocate_gvisor(machine, context)
         job_args = self._job_limits_args(spec) if spec.job_limits else ()
         identity = tuple(self._identity_args(spec))
         features = tuple(self._ssh_agent_args()) if spec.ssh_agent else ()
         if spec.gpu:
             features += tuple(self._gpu_args())
-        labels = (("mimchine", "1"), ("mimchine.id", machine.id))
+        labels = machine.labels
         command = create_command(
             spec,
             prefix=self.prefix,
@@ -85,6 +88,164 @@ class _ContainerEngine:
         )
         result = self.process.run(command, capture=True, cwd=NEUTRAL_BACKEND_CWD)
         return ContainerAllocation(result.stdout.strip(), context, labels)
+
+    def _allocate_gvisor(
+        self, machine: Machine, context: EngineContext, *, probe: bool = False
+    ) -> ContainerAllocation:
+        sandbox = GvisorSandbox(self.process, machine, probe=probe)
+        sandbox.prepare()
+        spec = replace(machine.spec, image=machine.gvisor.image_id)
+        labels = machine.probe_labels if probe else machine.labels
+        identity = sandbox.identity_args() if not probe else ("--userns=host",)
+        features = ()
+        if probe:
+            spec = replace(
+                spec,
+                name=machine.probe_name,
+                mounts=(),
+                ports=(),
+                env=(),
+                workdir=None,
+                shell_state=False,
+                ssh_agent=False,
+                network=NetworkMode.NONE,
+            )
+        elif machine.gvisor.agent_socket:
+            features = (
+                "-v",
+                f"{machine.gvisor.agent_socket}:/mim/ssh-agent.sock:ro",
+                "-e",
+                "SSH_AUTH_SOCK=/mim/ssh-agent.sock",
+            )
+        args = create_command(
+            spec,
+            prefix=(),
+            identity_args=identity,
+            engine_args=(
+                *gvisor_create_args(
+                    machine.spec.resources.memory_mib, machine.resource_unit
+                ),
+                *((PASTA_NETWORK,) if spec.network is NetworkMode.DEFAULT else ()),
+                *(("--tz=local",) if not probe else ()),
+            ),
+            feature_args=features,
+            publish_address="127.0.0.1",
+            relabel_shell_state=False,
+            labels=tuple((k, v) for k, v in labels if k != "mimchine"),
+            command=IDENTITY_PROBE_ARGV if probe else KEEPALIVE_ARGV,
+        )
+        result = sandbox.run(args, capture=True)
+        return ContainerAllocation(result.stdout.strip(), context, labels)
+
+    def resolve_image(self, image: str) -> str:
+        result = self.process.run(
+            (*self.prefix, "image", "inspect", image), capture=True, cwd="/"
+        )
+        data = json.loads(result.stdout)
+        if (
+            not isinstance(data, list)
+            or len(data) != 1
+            or not isinstance(data[0], dict)
+        ):
+            raise ValueError("invalid image inspection response")
+        metadata = data[0]
+        annotations = metadata.get("Annotations") or {}
+        if not isinstance(annotations, dict) or any(
+            not key.startswith("org.opencontainers.image.") for key in annotations
+        ):
+            raise ValueError(
+                "gVisor excludes image annotations that can alter runtime behavior"
+            )
+        return metadata["Id"]
+
+    def allocate_identity_probe(self, machine: Machine) -> ContainerAllocation:
+        context = self.context()
+        if context != machine.creation_context:
+            raise ValueError("engine context changed during identity preparation")
+        return self._allocate_gvisor(machine, context, probe=True)
+
+    def _gvisor_observation(
+        self, machine: Machine, *, probe: bool = False
+    ) -> MachineObservation:
+        target = machine.identity_probe if probe else machine.target
+        if target is None:
+            raise ValueError("gVisor preparation has no captured container ID")
+        observed = verify_observation(
+            self.observe(target.container_id),
+            target,
+            None if probe else machine.binding,
+        )
+        if observed is None:
+            raise ValueError("gVisor container is missing")
+        return observed
+
+    def _initialize_gvisor(self, machine: Machine, *, probe: bool = False) -> ImageUser:
+        sandbox = GvisorSandbox(self.process, machine, probe=probe)
+        sandbox.prepare()
+        observed = self._gvisor_observation(machine, probe=probe)
+        boundary = sandbox.verify_object(observed)
+        with sandbox.grants() as grants:
+            if boundary["status"] not in ("initialized", "running"):
+                sandbox.run(("init", observed.container_id), capture=True)
+                observed = self._gvisor_observation(machine, probe=probe)
+            return sandbox.verify(observed, grants)
+
+    def initialize_identity_probe(self, machine: Machine) -> ImageUser:
+        return self._initialize_gvisor(machine, probe=True)
+
+    def delete_identity_probe(self, machine: Machine) -> None:
+        target = machine.identity_probe
+        if target is None:
+            return
+        observed = verify_observation(self.observe(target.container_id), target)
+        if observed is not None:
+            self._gvisor_cleanup(machine, ("rm", "-f", target.container_id), probe=True)
+            if (
+                verify_observation(self.observe(target.container_id), target)
+                is not None
+            ):
+                raise ValueError("identity probe removal was not confirmed")
+
+    def check(self, machine: Machine) -> None:
+        self._target(machine, payload=True)
+        if machine.gvisor:
+            sandbox = GvisorSandbox(self.process, machine)
+            sandbox.prepare()
+            observed = verify_observation(
+                self.observe(machine.target.container_id),
+                machine.target,
+                machine.binding,
+            )
+            if observed is None:
+                raise ValueError("bound container is missing")
+            with sandbox.grants() as grants:
+                sandbox.verify(observed, grants)
+
+    def release(self, machine: Machine) -> None:
+        if machine.gvisor:
+            GvisorSandbox(self.process, machine).budget.remove(machine)
+
+    def _gvisor_cleanup(
+        self, machine: Machine, args: tuple[str, ...], *, probe: bool = False
+    ) -> None:
+        sandbox = GvisorSandbox(self.process, machine, probe=probe)
+        try:
+            sandbox.distribution()
+            sandbox.control_files()
+            target = machine.identity_probe if probe else machine.target
+            observed = verify_observation(self.observe(target.container_id), target)
+            profile = "offline" if probe else machine.gvisor.profile
+            expected = machine.gvisor.directory / "profiles" / profile / "runsc"
+            if observed is not None and observed.runtime != str(expected):
+                raise ValueError("refusing cleanup through a changed OCI runtime")
+        except (ValueError, OSError):
+            sandbox.budget.remove(machine)
+            raise
+        try:
+            sandbox.run(args, scoped=False, capture=True)
+        finally:
+            if not probe:
+                sandbox.budget.remove(machine)
 
     def context(self) -> EngineContext:
         raise NotImplementedError
@@ -150,6 +311,14 @@ class _ContainerEngine:
             "cpu_period": host_config.get("CpuPeriod"),
             "nano_cpus": host_config.get("NanoCpus"),
             "user": config.get("User"),
+            "boundary": {
+                "pid": state.get("Pid"),
+                "conmon_pid": state.get("ConmonPid"),
+                "status": state.get("Status"),
+                "oci_config": item.get("OCIConfigPath"),
+                "privileged": host_config.get("Privileged"),
+                "devices": host_config.get("Devices"),
+            },
         }
         return MachineObservation(
             actual_id,
@@ -199,8 +368,6 @@ class _ContainerEngine:
         )
 
     def _target(self, machine: Machine, *, payload: bool = False) -> str:
-        if payload and machine.spec.isolation is not IsolationMode.NATIVE:
-            raise ValueError(GVISOR_NOT_QUALIFIED)
         target = machine.target
         if target is None:
             raise ValueError("machine has no captured container ID; recover it first")
@@ -220,6 +387,10 @@ class _ContainerEngine:
 
     def start(self, machine: Machine) -> None:
         target = self._target(machine, payload=True)
+        if machine.gvisor:
+            self._initialize_gvisor(machine)
+            GvisorSandbox(self.process, machine).run(("start", target), capture=True)
+            return
         self.process.run(
             [*self.prefix, "start", target],
             foreground=True,
@@ -228,6 +399,18 @@ class _ContainerEngine:
         )
 
     def stop(self, machine: Machine) -> None:
+        if machine.gvisor:
+            target = self._target(machine)
+            observed = verify_observation(self.observe(target), machine.target)
+            if observed is not None:
+                status = json.loads(observed.configuration)["boundary"]["status"]
+                args = (
+                    ("container", "cleanup", target)
+                    if status == "initialized"
+                    else ("stop", target)
+                )
+                self._gvisor_cleanup(machine, args)
+            return
         self.process.run(
             [*self.prefix, "stop", self._target(machine)],
             foreground=True,
@@ -236,6 +419,9 @@ class _ContainerEngine:
         )
 
     def delete(self, machine: Machine) -> None:
+        if machine.gvisor:
+            self._gvisor_cleanup(machine, ("rm", "-f", self._target(machine)))
+            return
         self.process.run(
             [*self.prefix, "rm", "-f", self._target(machine)],
             foreground=True,
@@ -247,11 +433,13 @@ class _ContainerEngine:
         if spec.memory_mib is not None and not machine.spec.job_limits:
             raise ValueError("command memory limits require creation with --job-limits")
         target = self._target(machine, payload=True)
+        if machine.gvisor:
+            self.check(machine)
         # Preparation is idempotent and belongs to dispatch, not startup:
         # an already-running or adopted container may never have completed it.
         if machine.spec.job_limits:
             self._prepare_jobs(machine)
-        args = [*self.prefix, "exec"]
+        args = ["exec"]
         if spec.interactive:
             args.append("-i")
         if spec.tty:
@@ -272,7 +460,14 @@ class _ContainerEngine:
                 "mim-exec",
                 *command,
             )
-        self.process.run([*args, *command], foreground=True, cwd=NEUTRAL_BACKEND_CWD)
+        if machine.gvisor:
+            GvisorSandbox(self.process, machine).run((*args, *command), foreground=True)
+        else:
+            self.process.run(
+                [*self.prefix, *args, *command],
+                foreground=True,
+                cwd=NEUTRAL_BACKEND_CWD,
+            )
 
     def _identity_args(self, spec: MachineSpec) -> list[str]:
         if spec.identity is IdentityMode.ROOT:

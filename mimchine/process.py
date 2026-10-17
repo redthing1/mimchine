@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -19,6 +21,7 @@ class ProcessError(RuntimeError):
         self.result = result
         super().__init__(
             f"command failed with exit code {result.returncode}: {result.args[0]}"
+            + (f": {result.stderr.strip()[-2000:]}" if result.stderr.strip() else "")
         )
 
 
@@ -32,6 +35,7 @@ class ProcessRunner:
         discard_stdout: bool = False,
         check: bool = True,
         cwd: str | Path | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> ProcessResult:
         command = tuple(str(arg) for arg in args)
         if not command:
@@ -45,6 +49,7 @@ class ProcessRunner:
                 returncode = subprocess.call(
                     command,
                     cwd=cwd_text,
+                    env=None if env is None else {**os.environ, **env},
                     stdout=subprocess.DEVNULL if discard_stdout else None,
                 )
                 result = ProcessResult(command, returncode)
@@ -54,6 +59,7 @@ class ProcessRunner:
                     check=False,
                     text=True,
                     cwd=cwd_text,
+                    env=None if env is None else {**os.environ, **env},
                     stdout=(
                         subprocess.PIPE
                         if capture

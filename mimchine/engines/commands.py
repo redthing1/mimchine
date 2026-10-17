@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from ..domain import MachineSpec, MountSpec, NetworkMode
-from .lifecycle import KEEPALIVE_COMMAND
+from .lifecycle import KEEPALIVE_ARGV
 
 
 def create_command(
@@ -18,6 +18,7 @@ def create_command(
     publish_address: str | None = None,
     relabel_shell_state: bool = True,
     labels: tuple[tuple[str, str], ...] = (),
+    command: tuple[str, ...] = KEEPALIVE_ARGV,
 ) -> tuple[str, ...]:
     validate_container_args(spec.container_args)
     args = [*prefix, "create", "--name", spec.name, "--label", "mimchine=1"]
@@ -44,7 +45,7 @@ def create_command(
         args.extend(("-p", published))
     args.extend(feature_args)
     args.extend(spec.container_args)
-    args.extend(("--", spec.image, "sh", "-lc", KEEPALIVE_COMMAND))
+    args.extend(("--entrypoint", command[0], "--", spec.image, *command[1:]))
     return tuple(args)
 
 

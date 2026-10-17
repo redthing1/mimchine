@@ -410,6 +410,105 @@ class MachineBinding:
 
 
 @dataclass(frozen=True)
+class ImageUser:
+    uid: int
+    gid: int
+
+    def __post_init__(self) -> None:
+        for value in (self.uid, self.gid):
+            if type(value) is not int or not 0 <= value < 4294967295:
+                raise ValueError("image identity requires valid numeric UID and GID")
+
+    def to_data(self) -> dict[str, int]:
+        return {"uid": self.uid, "gid": self.gid}
+
+    @classmethod
+    def from_data(cls, data: dict[str, Any]) -> "ImageUser":
+        return cls(data["uid"], data["gid"])
+
+
+@dataclass(frozen=True)
+class GvisorBinding:
+    directory: Path
+    manifest_sha256: str
+    profile: str
+    image_id: str
+    control_dir: Path
+    image_user: ImageUser | None = None
+    agent_socket: Path | None = None
+    history_source: Path | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("directory", "control_dir"):
+            value = Path(getattr(self, name))
+            if not value.is_absolute() or ".." in value.parts:
+                raise ValueError(f"gVisor {name} must be an absolute canonical path")
+            object.__setattr__(self, name, value)
+        if (
+            not isinstance(self.manifest_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", self.manifest_sha256) is None
+        ):
+            raise ValueError("invalid gVisor distribution digest")
+        if self.profile not in {"offline", "online", "offline-agent", "online-agent"}:
+            raise ValueError("invalid gVisor runtime profile")
+        image = (
+            self.image_id.removeprefix("sha256:")
+            if isinstance(self.image_id, str)
+            else ""
+        )
+        if re.fullmatch(r"[0-9a-f]{64}", image) is None:
+            raise ValueError("gVisor requires an immutable image ID")
+        object.__setattr__(self, "image_id", f"sha256:{image}")
+        for name in ("agent_socket", "history_source"):
+            if getattr(self, name) is not None:
+                path = Path(getattr(self, name))
+                if not path.is_absolute() or ".." in path.parts:
+                    raise ValueError(
+                        f"gVisor {name} grant must use an absolute canonical path"
+                    )
+                object.__setattr__(self, name, path)
+
+    @property
+    def entrypoint(self) -> Path:
+        return self.directory / "profiles" / self.profile / "runsc"
+
+    def to_data(self) -> dict[str, Any]:
+        return {
+            "directory": str(self.directory),
+            "manifest_sha256": self.manifest_sha256,
+            "profile": self.profile,
+            "image_id": self.image_id,
+            "control_dir": str(self.control_dir),
+            "image_user": None
+            if self.image_user is None
+            else self.image_user.to_data(),
+            "agent_socket": None
+            if self.agent_socket is None
+            else str(self.agent_socket),
+            "history_source": None
+            if self.history_source is None
+            else str(self.history_source),
+        }
+
+    @classmethod
+    def from_data(cls, data: dict[str, Any]) -> "GvisorBinding":
+        return cls(
+            Path(data["directory"]),
+            data["manifest_sha256"],
+            data["profile"],
+            data["image_id"],
+            Path(data["control_dir"]),
+            None
+            if data.get("image_user") is None
+            else ImageUser.from_data(data["image_user"]),
+            None if data.get("agent_socket") is None else Path(data["agent_socket"]),
+            None
+            if data.get("history_source") is None
+            else Path(data["history_source"]),
+        )
+
+
+@dataclass(frozen=True)
 class MachineObservation:
     container_id: str
     context: EngineContext
@@ -464,6 +563,8 @@ class Machine:
     allocation: ContainerAllocation | None = None
     error: str | None = None
     creation_context: EngineContext | None = None
+    gvisor: GvisorBinding | None = None
+    identity_probe: ContainerAllocation | None = None
 
     def __post_init__(self) -> None:
         _require_text(self.id, "machine ID")
@@ -501,6 +602,54 @@ class Machine:
                 raise ValueError(
                     "allocation ownership does not match the creation transaction"
                 )
+        if self.spec.isolation is IsolationMode.GVISOR:
+            if self.gvisor is None or self.spec.engine != "podman":
+                raise ValueError(
+                    "gVisor machine requires a bound Podman runtime distribution"
+                )
+            profile = "offline" if self.spec.network is NetworkMode.NONE else "online"
+            profile += "-agent" if self.spec.ssh_agent else ""
+            if self.gvisor.profile != profile:
+                raise ValueError("gVisor profile does not match machine intent")
+            if self.spec.ssh_agent != (self.gvisor.agent_socket is not None):
+                raise ValueError("SSH-agent grant does not match machine intent")
+            if self.spec.shell_state != (self.gvisor.history_source is not None):
+                raise ValueError("shell history grant does not match machine intent")
+            if (
+                self.spec.resources.cpus is None
+                or self.spec.resources.memory_mib is None
+            ):
+                raise ValueError(
+                    "gVisor machine requires a finite CPU and memory budget"
+                )
+            if self.binding is not None:
+                if self.binding.runtime != str(self.gvisor.entrypoint):
+                    raise ValueError(
+                        "gVisor runtime does not match the machine binding"
+                    )
+                if self.binding.image_id.removeprefix(
+                    "sha256:"
+                ) != self.gvisor.image_id.removeprefix("sha256:"):
+                    raise ValueError("gVisor image does not match the machine binding")
+            if self.operation is Operation.READY:
+                if self.identity_probe is not None:
+                    raise ValueError("ready machine cannot retain an identity probe")
+                if (
+                    self.spec.identity is IdentityMode.IMAGE
+                    and self.gvisor.image_user is None
+                ):
+                    raise ValueError(
+                        "gVisor image identity must be prepared before creation completes"
+                    )
+        elif self.gvisor is not None or self.identity_probe is not None:
+            raise ValueError("native machine cannot retain gVisor preparation state")
+        if self.identity_probe is not None:
+            if self.identity_probe.context != self.creation_context:
+                raise ValueError(
+                    "identity probe context does not match the creation transaction"
+                )
+            if self.identity_probe.labels != tuple(sorted(self.probe_labels)):
+                raise ValueError("identity probe ownership does not match the machine")
 
     @property
     def name(self) -> str:
@@ -509,6 +658,27 @@ class Machine:
     @property
     def target(self) -> ContainerAllocation | None:
         return self.binding.allocation if self.binding else self.allocation
+
+    @property
+    def labels(self) -> tuple[tuple[str, str], ...]:
+        labels = (("mimchine", "1"), ("mimchine.id", self.id))
+        return (*labels, ("mimchine.role", "machine")) if self.gvisor else labels
+
+    @property
+    def probe_labels(self) -> tuple[tuple[str, str], ...]:
+        return (
+            ("mimchine", "1"),
+            ("mimchine.id", self.id),
+            ("mimchine.role", "identity"),
+        )
+
+    @property
+    def probe_name(self) -> str:
+        return f"mim-identity-{UUID(self.id).hex}"
+
+    @property
+    def resource_unit(self) -> str:
+        return f"mim{UUID(self.id).hex}.slice"
 
     def to_data(self) -> dict[str, Any]:
         return {
@@ -525,6 +695,10 @@ class Machine:
             "creation_context": None
             if self.creation_context is None
             else self.creation_context.to_data(),
+            "gvisor": None if self.gvisor is None else self.gvisor.to_data(),
+            "identity_probe": None
+            if self.identity_probe is None
+            else self.identity_probe.to_data(),
         }
 
     @classmethod
@@ -547,6 +721,12 @@ class Machine:
             creation_context=None
             if data.get("creation_context") is None
             else EngineContext.from_data(data["creation_context"]),
+            gvisor=None
+            if data.get("gvisor") is None
+            else GvisorBinding.from_data(data["gvisor"]),
+            identity_probe=None
+            if data.get("identity_probe") is None
+            else ContainerAllocation.from_data(data["identity_probe"]),
         )
 
 

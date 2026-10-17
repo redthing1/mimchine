@@ -27,6 +27,9 @@ packages = ["mimchine"]
 "mimchine/enter_shell.sh" = "mimchine/enter_shell.sh"
 "mimchine/scripts/mim-limit.sh" = "mimchine/scripts/mim-limit.sh"
 
+[tool.pytest.ini_options]
+markers = ["live_gvisor: explicitly enabled, bounded rootless gVisor integration"]
+
 [dependency-groups]
 build = [
     "hatchling==1.24.2",

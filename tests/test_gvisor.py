@@ -160,3 +160,19 @@ def test_broken_latest_installation_does_not_fall_back(distribution, tmp_path):
     selected = find_runtime(None, directory=directory)
     with pytest.raises(ValueError, match="cannot verify"):
         verify_runtime(selected, "offline")
+
+
+@pytest.mark.parametrize("target", ["runsc", "manifest.json", "gvisor-bin"])
+def test_other_writers_cannot_modify_a_verified_distribution(distribution, target):
+    path = distribution / target
+    path.chmod(path.stat().st_mode | 0o020)
+    with pytest.raises(ValueError, match="untrusted writes|other writers"):
+        verify_runtime(distribution / "runsc", "offline")
+
+
+def test_runtime_cannot_be_modified_through_a_hard_linked_workspace_alias(
+    distribution, tmp_path
+):
+    (tmp_path / "alias").hardlink_to(distribution / "runsc")
+    with pytest.raises(ValueError, match="singly linked"):
+        verify_runtime(distribution / "runsc", "offline")

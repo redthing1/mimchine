@@ -99,21 +99,24 @@ mim exec --memory 512 dev make
 
 The limit is in MiB and covers the command and its descendants.
 
-## isolation plans
+## isolation
 
-Inspect a gVisor policy without invoking an engine or creating a machine:
+With a [Mim gVisor distribution](https://github.com/redthing1/gvisor) installed
+on Linux with rootless Podman:
 
 ```sh
-mim create dev --image app:dev --isolation gvisor --plan
+mim create dev --image app:dev --isolation gvisor --workspace .
+mim enter dev
 ```
 
-gVisor is available for planning only. See [isolation plans](docs/isolation.md)
-for configuration and policy details.
+Existing machines retain their isolation mode. See [isolation](docs/isolation.md)
+for installation, resource limits, supported features, and offline planning.
 
 ## development
 
 ```sh
 uv sync --locked
+uv run pytest
 uv run mim --help
 uv run mim build mim-fed:dev -f demo/mim_fed.docker -C demo
 ```

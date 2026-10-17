@@ -1,12 +1,9 @@
-"""Offline isolation-policy compiler.
-
-Plans are review artifacts, never executable capabilities. In particular, a
-gVisor plan cannot authorize a launch until the engine/binding and host-cgroup
-verification described in its requirements have been implemented and qualified.
-"""
+"""Pure isolation policy, grant validation and offline command templates."""
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,11 +11,65 @@ from typing import Any
 from .config import GvisorRuntime
 from .domain import IdentityMode, IsolationMode, MachineSpec, MountSpec, NetworkMode
 from .engines.commands import create_command
+from .paths import cache_dir, config_dir, data_dir
+from .scope import HOST_TASK_LIMIT
 
-GVISOR_NOT_QUALIFIED = (
-    "gVisor execution is not enabled: runtime and host enforcement require qualification; "
-    "use --isolation gvisor --plan to inspect the candidate policy"
+PASTA_NETWORK = "--network=pasta:--no-splice"
+
+
+def control_paths(*additional: Path) -> tuple[Path, ...]:
+    return (
+        config_dir(),
+        data_dir(),
+        cache_dir(),
+        Path(__file__).resolve().parent,
+        Path(sys.prefix),
+        Path(sys.base_prefix),
+        *(Path(directory).absolute() for directory in os.get_exec_path()),
+        config_dir().parent / "containers",
+        data_dir().parent / "containers",
+        Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"),
+        *additional,
+    )
+
+
+CAPABILITIES = frozenset(
+    f"CAP_{name}"
+    for name in (
+        "CHOWN",
+        "DAC_OVERRIDE",
+        "FOWNER",
+        "FSETID",
+        "KILL",
+        "NET_BIND_SERVICE",
+        "SETFCAP",
+        "SETGID",
+        "SETPCAP",
+        "SETUID",
+        "SYS_CHROOT",
+    )
 )
+
+
+def gvisor_create_args(memory: int | str, unit: str) -> tuple[str, ...]:
+    return (
+        f"--pids-limit={HOST_TASK_LIMIT}",
+        f"--memory-swap={memory}m",
+        "--cgroupns=private",
+        "--cgroups=enabled",
+        "--cgroup-parent",
+        unit,
+        "--pid=private",
+        "--ipc=private",
+        "--uts=private",
+        "--systemd=false",
+        "--security-opt=no-new-privileges",
+        "--security-opt=label=disable",
+        "--security-opt=apparmor=unconfined",
+        "--http-proxy=false",
+        "--image-volume=ignore",
+        "--pull=never",
+    )
 
 
 @dataclass(frozen=True)
@@ -73,7 +124,7 @@ class MachinePlan:
         spec = self.spec.to_data()
         return {
             "plan_version": 1,
-            "status": "unqualified" if self.policy else "preview",
+            "status": "preview",
             "execution_enabled": False,
             "isolation": self.spec.isolation.value,
             "machine": spec,
@@ -107,27 +158,33 @@ def plan_machine(
     isolation = spec.isolation
     if isolation is IsolationMode.NATIVE:
         return _native_plan(spec)
-    _validate_gvisor(spec, runtime, protected_paths, history_mount)
+    validate_gvisor(
+        spec, runtime, protected_paths=protected_paths, history_mount=history_mount
+    )
     policy = GvisorPolicy(runtime, spec.network, spec.ssh_agent)
     engine_args = (
+        *gvisor_create_args(
+            spec.resources.memory_mib or "<memory-mib>", "mim<machine-uuid>.slice"
+        ),
         "--tz=local",
-        "--pids-limit=1024",
-        "--security-opt=no-new-privileges",
-        # runsc currently rejects an OCI SELinux process label. This is local
-        # to this candidate container; do not change host LSM configuration.
-        "--security-opt=label=disable",
-        *(("--network=pasta",) if spec.network is NetworkMode.DEFAULT else ()),
+        *((PASTA_NETWORK,) if spec.network is NetworkMode.DEFAULT else ()),
     )
     feature_args = _ssh_agent_template() if spec.ssh_agent else ()
     command = create_command(
         spec,
-        prefix=policy.prefix,
+        prefix=(
+            *policy.prefix,
+            "--hooks-dir",
+            "<control-dir>/hooks",
+            "--default-mounts-file",
+            "<control-dir>/mounts.conf",
+        ),
         identity_args=_identity_template(spec),
         engine_args=engine_args,
         feature_args=feature_args,
         publish_address="127.0.0.1",
         relabel_shell_state=False,
-        labels=(("mimchine.id", "<machine-id>"),),
+        labels=(("mimchine.id", "<machine-id>"), ("mimchine.role", "machine")),
     )
     requirements = _gvisor_requirements()
     if runtime.path is None:
@@ -155,11 +212,12 @@ def plan_machine(
     )
 
 
-def _validate_gvisor(
+def validate_gvisor(
     spec: MachineSpec,
     runtime: GvisorRuntime,
+    *,
     protected_paths: tuple[Path, ...],
-    history_mount: MountSpec | None,
+    history_mount: MountSpec | None = None,
 ) -> None:
     if spec.engine != "podman":
         raise ValueError("gVisor isolation requires rootless Podman on native Linux")
@@ -171,6 +229,13 @@ def _validate_gvisor(
         )
     if spec.network is NetworkMode.HOST:
         raise ValueError("gVisor isolation excludes host networking")
+    if spec.ports and spec.network is NetworkMode.NONE:
+        raise ValueError("gVisor port publishing requires networking")
+    targets = [mount.target for mount in spec.mounts]
+    if spec.ssh_agent:
+        targets.append("/mim/ssh-agent.sock")
+    if len(targets) != len(set(targets)):
+        raise ValueError("gVisor filesystem grant destinations must be unique")
     if spec.container_args:
         raise ValueError(
             "gVisor isolation excludes raw container arguments; use typed machine options"
@@ -185,10 +250,21 @@ def _validate_gvisor(
     )
     for mount in spec.mounts:
         source = mount.source.resolve()
-        if set(mount.options) - {"z", "Z"}:
-            raise ValueError(
-                "gVisor isolation supports only z/Z mount options in this prototype"
+        target = Path(mount.target)
+        if (
+            ".." in target.parts
+            or str(target) != mount.target.rstrip("/")
+            or target == Path("/")
+            or any(
+                target == kernel or target.is_relative_to(kernel)
+                for kernel in (Path("/dev"), Path("/proc"), Path("/sys"))
             )
+        ):
+            raise ValueError(
+                f"gVisor isolation excludes kernel or noncanonical mount targets: {mount.target}"
+            )
+        if set(mount.options) - {"z", "Z"}:
+            raise ValueError("Mim's gVisor mode accepts only z/Z mount options")
         if (
             source.is_relative_to("/dev")
             or source.is_relative_to("/proc")
@@ -265,6 +341,15 @@ def _native_plan(spec: MachineSpec) -> MachinePlan:
 
 
 def _identity_template(spec: MachineSpec) -> tuple[str, ...]:
+    if spec.isolation is IsolationMode.GVISOR:
+        if spec.identity is IdentityMode.ROOT:
+            return ("--userns=host", "--user=0:0")
+        uid, gid = (
+            ("<host-uid>", "<host-gid>")
+            if spec.identity is IdentityMode.HOST
+            else ("<image-uid>", "<image-gid>")
+        )
+        return (f"--userns=keep-id:uid={uid},gid={gid}", f"--user={uid}:{gid}")
     if spec.identity is IdentityMode.ROOT:
         return ("--user", "0:0")
     if spec.engine == "podman":
@@ -308,7 +393,7 @@ def _gvisor_requirements() -> tuple[Requirement, ...]:
     return (
         Requirement(
             "host",
-            "Qualify native Linux, local rootless Podman, UID/GID mappings, pasta and delegated cgroup v2 with the user systemd manager. Remote Podman is excluded.",
+            "Local rootless Podman on Linux, delegated cgroup v2, systemd 254+, and pasta with --no-splice are required.",
         ),
         Requirement(
             "distribution",
@@ -316,11 +401,11 @@ def _gvisor_requirements() -> tuple[Requirement, ...]:
         ),
         Requirement(
             "runtime-policy",
-            "Bind the runtime artifact and fixed flags to the machine across every lifecycle call. Qualify ambient containers.conf, image annotations, OCI hooks, devices, mounts and namespace defaults against the effective OCI spec.",
+            "Use a fixed runtime profile and private engine policy; verify effective privileges, namespaces, devices, hooks and filesystem grants.",
         ),
         Requirement(
             "identity",
-            "Resolve image UID/GID without executing an untrusted image through a native runtime. Any execution-based probe must use the same qualified isolation policy.",
+            "Resolve image UID/GID from initialized OCI metadata before running image code.",
         ),
         Requirement(
             "binding",
@@ -332,11 +417,11 @@ def _gvisor_requirements() -> tuple[Requirement, ...]:
         ),
         Requirement(
             "resources",
-            "Verify host memory.max/cpu.max and coverage of Sentry, Gofer and helpers. Qualify enforcement and failure paths in a disposable environment; guest cgroup CPU/memory writes are not evidence.",
+            "Verify actual host CPU, memory, swap and task limits covering Sentry, Gofer, networking and concurrent exec helpers before dispatch.",
         ),
         Requirement(
             "lifecycle",
-            "Qualify writable rootfs persistence, host-edited binds, stop/start, concurrent operations and crash recovery. Rootfs overlay is owned by Podman; host-side watcher notifications may require polling.",
+            "Podman retains writable rootfs storage across stop/start; host-side workspace changes remain visible. Filesystem watchers may need polling.",
         ),
         Requirement(
             "authority",

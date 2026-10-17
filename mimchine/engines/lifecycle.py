@@ -28,3 +28,6 @@ while :; do
   fi
 done
 """.strip()
+
+KEEPALIVE_ARGV = ("/bin/sh", "-lc", KEEPALIVE_COMMAND)
+IDENTITY_PROBE_ARGV = ("/bin/sh", "-c", "exit 125")

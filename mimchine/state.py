@@ -117,6 +117,14 @@ class MachineStore:
             raise ValueError(
                 f"machine record name does not match its directory: {name}"
             )
+        if (
+            machine.gvisor
+            and machine.gvisor.control_dir
+            != (self.machine_dir(name) / "gvisor").resolve()
+        ):
+            raise ValueError(
+                "gVisor control directory does not match the machine store"
+            )
         return machine
 
     def delete(self, name: str) -> None:

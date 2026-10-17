@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import stat
+import sys
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +15,7 @@ from .domain import (
     BuildSpec,
     ContainerAllocation,
     ExecSpec,
+    GvisorBinding,
     IdentityMode,
     IsolationMode,
     Machine,
@@ -29,7 +32,8 @@ from .domain import (
     verify_observation,
 )
 from .engines import Engine, get_engine
-from .isolation import GVISOR_NOT_QUALIFIED, MachinePlan, plan_machine
+from .gvisor import find_runtime, verify_runtime
+from .isolation import GvisorPolicy, MachinePlan, control_paths, plan_machine
 from .log import logger
 from .mounts import (
     map_host_path_to_guest,
@@ -37,7 +41,7 @@ from .mounts import (
     parse_mount_spec,
     parse_workspace_spec,
 )
-from .paths import cache_dir, config_dir, data_dir
+from .paths import data_dir
 from .profiles import Profile, load_profile
 from .shell_state import ShellStateManager
 from .shells import enter_shell_command, normalize_shell
@@ -144,28 +148,77 @@ class MachineService:
     def create(self, options: CreateOptions) -> Machine:
         spec = self._resolve(options)
         self._plan(spec)
-        _require_executable(spec)
         engine = self._engine(spec.engine)
         with self.store.lock(spec.name):
             if self.store.exists(spec.name):
                 raise ValueError(f"machine [{spec.name}] already exists")
+            gvisor = None
+            if spec.isolation is IsolationMode.GVISOR:
+                if sys.platform != "linux" or os.getuid() == 0:
+                    raise ValueError("gVisor requires local rootless Podman on Linux")
+                profile = GvisorPolicy(
+                    self.config.gvisor, spec.network, spec.ssh_agent
+                ).profile
+                runtime = verify_runtime(find_runtime(self.config.gvisor.path), profile)
+                agent = None
+                if spec.ssh_agent:
+                    path = os.environ.get("SSH_AUTH_SOCK")
+                    if not path:
+                        raise ValueError(
+                            "SSH_AUTH_SOCK is required for SSH-agent forwarding"
+                        )
+                    agent = Path(path).resolve(strict=True)
+                    if not stat.S_ISSOCK(agent.stat().st_mode):
+                        raise ValueError("SSH_AUTH_SOCK must name a Unix socket")
+                gvisor = GvisorBinding(
+                    runtime.distribution,
+                    runtime.manifest_sha256,
+                    profile,
+                    engine.resolve_image(spec.image),
+                    (self.store.machine_dir(spec.name) / "gvisor").resolve(),
+                    agent_socket=agent,
+                    history_source=self.shell_state.path_for(spec.name).resolve()
+                    if spec.shell_state
+                    else None,
+                )
             machine = Machine(
-                str(uuid4()), spec, _now(), creation_context=engine.context()
+                str(uuid4()),
+                spec,
+                _now(),
+                creation_context=engine.context(),
+                gvisor=gvisor,
             )
             self.store.save(machine)
-            try:
-                if spec.shell_state:
-                    self.shell_state.ensure(spec.name)
-                allocation = engine.allocate(machine)
-                machine = replace(machine, allocation=allocation)
+            return self._continue_creation(machine, engine, start=options.start)
+
+    def _continue_creation(
+        self, machine: Machine, engine: Engine, *, start: bool
+    ) -> Machine:
+        try:
+            if machine.gvisor and machine.spec.identity is IdentityMode.IMAGE:
+                probe = engine.allocate_identity_probe(machine)
+                machine = replace(machine, identity_probe=probe)
                 self.store.save(machine)
-                machine = self._complete_creation(machine, engine)
-                if options.start:
-                    self._ensure_running(machine, engine)
-                return machine
-            except Exception as exc:
-                self._remember_error(machine, exc)
-                raise
+                user = engine.initialize_identity_probe(machine)
+                machine = replace(
+                    machine, gvisor=replace(machine.gvisor, image_user=user)
+                )
+                self.store.save(machine)
+                engine.delete_identity_probe(machine)
+                machine = replace(machine, identity_probe=None)
+                self.store.save(machine)
+            if machine.spec.shell_state:
+                self.shell_state.ensure(machine.name)
+            allocation = engine.allocate(machine)
+            machine = replace(machine, allocation=allocation)
+            self.store.save(machine)
+            machine = self._complete_creation(machine, engine)
+            if start:
+                self._ensure_running(machine, engine)
+            return machine
+        except Exception as exc:
+            self._remember_error(machine, exc)
+            raise
 
     def _complete_creation(self, machine: Machine, engine: Engine) -> Machine:
         observation = self._observe(machine, engine)
@@ -188,7 +241,6 @@ class MachineService:
     def recover(self, name: str) -> Machine:
         with self.store.lock(name):
             machine = self.store.load(name)
-            _require_executable(machine.spec)
             engine = self._engine(machine.spec.engine)
             if machine.operation is Operation.DELETING:
                 raise ValueError(
@@ -200,6 +252,11 @@ class MachineService:
                         "bound container is missing; recovery did not replace it"
                     )
                 return machine
+            machine = self._recover_identity_probe(machine, engine)
+            if machine.identity_probe is not None:
+                engine.delete_identity_probe(machine)
+                machine = replace(machine, identity_probe=None)
+                self.store.save(machine)
             if machine.target is None:
                 machine = self._recover_allocation(machine, engine)
                 if machine.target is None:
@@ -207,6 +264,28 @@ class MachineService:
                         f"no allocated object for [{name}]; delete the incomplete reservation"
                     )
             return self._complete_creation(machine, engine)
+
+    def _recover_identity_probe(self, machine: Machine, engine: Engine) -> Machine:
+        if (
+            not machine.gvisor
+            or machine.identity_probe is not None
+            or machine.binding is not None
+        ):
+            return machine
+        observed = engine.observe(machine.probe_name)
+        if observed.context != machine.creation_context:
+            raise ValueError(
+                "identity preparation context does not match its transaction"
+            )
+        if isinstance(observed, MissingContainer):
+            return machine
+        allocation = ContainerAllocation(
+            observed.container_id, observed.context, machine.probe_labels
+        )
+        observed.verify(allocation)
+        machine = replace(machine, identity_probe=allocation)
+        self.store.save(machine)
+        return machine
 
     def _recover_allocation(self, machine: Machine, engine: Engine) -> Machine:
         # Only an unfinished allocation transaction may resolve its reserved
@@ -216,7 +295,7 @@ class MachineService:
             raise ValueError("engine context does not match the creation transaction")
         if isinstance(observed, MissingContainer):
             return machine
-        labels = (("mimchine", "1"), ("mimchine.id", machine.id))
+        labels = machine.labels
         allocation = ContainerAllocation(
             observed.container_id, observed.context, labels
         )
@@ -233,16 +312,9 @@ class MachineService:
         return plan_machine(
             spec,
             self.config.gvisor,
-            protected_paths=(
-                config_dir(),
-                data_dir(),
-                cache_dir(),
+            protected_paths=control_paths(
                 self.store.base_dir,
                 self.shell_state.base_dir,
-                Path(__file__).resolve().parent,
-                config_dir().parent / "containers",
-                data_dir().parent / "containers",
-                Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"),
             ),
             history_mount=self.shell_state.mount_for(spec.name)
             if spec.shell_state
@@ -259,8 +331,12 @@ class MachineService:
             machine = self.store.load(name)
             engine = self._engine(machine.spec.engine)
             observed = self._observe(machine, engine, strict=False)
-            if observed is not None and observed.state is RuntimeState.RUNNING:
+            if observed is not None and (
+                observed.state is RuntimeState.RUNNING or machine.gvisor
+            ):
                 engine.stop(machine)
+            elif machine.gvisor:
+                engine.release(machine)
             observed = self._observe(machine, engine, strict=False)
             if observed is not None and observed.state is not RuntimeState.STOPPED:
                 raise ValueError(f"machine [{name}] did not reach a stopped state")
@@ -270,6 +346,7 @@ class MachineService:
         with self.store.lock(name):
             machine = self.store.load(name)
             engine = self._engine(machine.spec.engine)
+            machine = self._recover_identity_probe(machine, engine)
             if machine.target is None:
                 machine = self._recover_allocation(machine, engine)
             observed = (
@@ -286,6 +363,12 @@ class MachineService:
                         raise ValueError(
                             "container removal was not confirmed; binding retained"
                         )
+                if machine.identity_probe is not None:
+                    engine.delete_identity_probe(machine)
+                    machine = replace(machine, identity_probe=None)
+                    self.store.save(machine)
+                if machine.gvisor:
+                    engine.release(machine)
                 if not keep_shell_state:
                     self.shell_state.delete(name)
                 self.store.delete(name)
@@ -304,7 +387,9 @@ class MachineService:
                 raise ValueError(
                     "command memory limits require creation with --job-limits"
                 )
-            self._ensure_running(machine, self._engine(machine.spec.engine))
+            self._ensure_running(
+                machine, self._engine(machine.spec.engine), verify=False
+            )
             return machine
 
     def enter(self, name: str, shell: str | None = None) -> None:
@@ -370,8 +455,9 @@ class MachineService:
             machine.binding if strict else None,
         )
 
-    def _ensure_running(self, machine: Machine, engine: Engine) -> RuntimeState:
-        _require_executable(machine.spec)
+    def _ensure_running(
+        self, machine: Machine, engine: Engine, *, verify: bool = True
+    ) -> RuntimeState:
         if machine.operation is not Operation.READY:
             raise ValueError(
                 f"machine [{machine.name}] is {machine.operation.value}; recover or finish deletion first"
@@ -388,6 +474,8 @@ class MachineService:
                 raise ValueError(f"machine [{machine.name}] failed to start")
         elif observed.state is not RuntimeState.RUNNING:
             raise ValueError(f"machine [{machine.name}] state is unknown")
+        elif machine.gvisor and verify:
+            engine.check(machine)
         if machine.error:
             self.store.save(replace(machine, error=None))
         return RuntimeState.RUNNING
@@ -457,6 +545,13 @@ class MachineService:
             self.config.defaults.network,
         )
         resources = _resource_spec(options, profile, self.config.defaults)
+        isolation = _first(
+            options.isolation, profile.isolation, self.config.defaults.isolation
+        )
+        if isolation is IsolationMode.GVISOR:
+            resources = ResourceSpec(
+                cpus=resources.cpus or 2, memory_mib=resources.memory_mib or 4096
+            )
         mounts = _mounts(options, profile)
         shell_state_enabled = _bool_option(
             options.shell_state, profile.shell_state, True
@@ -468,9 +563,7 @@ class MachineService:
             name=options.name,
             image=image,
             engine=runner,
-            isolation=_first(
-                options.isolation, profile.isolation, self.config.defaults.isolation
-            ),
+            isolation=isolation,
             mounts=mounts,
             ports=_ports(options, profile),
             env=_env(options, profile),
@@ -508,11 +601,6 @@ def _validate_create(spec: MachineSpec) -> None:
         raise ValueError("port publishing cannot be used with host networking")
     if spec.gpu and spec.engine != "podman":
         raise ValueError(f"engine [{spec.engine}] does not support GPU forwarding")
-
-
-def _require_executable(spec: MachineSpec) -> None:
-    if spec.isolation is IsolationMode.GVISOR:
-        raise ValueError(GVISOR_NOT_QUALIFIED)
 
 
 def _session_env(spec: MachineSpec) -> tuple[str, ...]:
