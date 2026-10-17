@@ -6,6 +6,7 @@ MIM_GVISOR_IMAGE=sha256:... uv run pytest -q tests/test_gvisor_live.py
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -15,7 +16,7 @@ import pytest
 
 from mimchine.config import AppConfig, Defaults, GvisorRuntime
 from mimchine.domain import ExecSpec, IsolationMode, NetworkMode, RuntimeState
-from mimchine.process import ProcessRunner
+from mimchine.process import ProcessError, ProcessResult, ProcessRunner
 from mimchine.resources import SystemdBudget
 from mimchine.services import CreateOptions, MachineService
 from mimchine.shell_state import ShellStateManager
@@ -30,7 +31,7 @@ pytestmark = [
 ]
 
 
-def test_rootless_gvisor_lifecycle_and_boundary_failures(tmp_path):
+def test_rootless_gvisor_lifecycle_and_boundary_failures(tmp_path, monkeypatch):
     runtime = Path(os.environ["MIM_GVISOR_RUNTIME"]).resolve(strict=True)
     image = os.environ["MIM_GVISOR_IMAGE"]
     if not re.fullmatch(r"(sha256:)?[a-f0-9]{64}", image):
@@ -46,10 +47,21 @@ def test_rootless_gvisor_lifecycle_and_boundary_failures(tmp_path):
         MachineStore(tmp_path / "state/machines"),
         ShellStateManager(tmp_path / "state/shell-state"),
     )
+    engine = service._engine("podman")
+    service.engines["podman"] = engine
+    context = engine.context()
+    ambient = tmp_path / "containers.conf"
+    ambient.write_text(
+        "[containers]\nprivileged = true\ninit = true\nread_only = true\n"
+        'env = ["MIM_AMBIENT=must-not-leak"]\n'
+        f'mounts = ["type=bind,source={readonly},destination=/implicit", {{append=true}}]\n'
+    )
+    monkeypatch.setenv("CONTAINERS_CONF", str(ambient))
+    assert engine.context() == context
     rootfs_file = "/var/tmp/" + name
 
     def execute(script):
-        service.exec(name, ExecSpec(("/bin/sh", "-c", script)))
+        service.exec(name, ExecSpec(("/bin/sh", "-ec", script)))
 
     try:
         machine = service.create(
@@ -68,9 +80,17 @@ def test_rootless_gvisor_lifecycle_and_boundary_failures(tmp_path):
         budget = SystemdBudget(ProcessRunner())
         group = budget.verify(machine)
         execute(
-            f'test "$(cat /readonly/source)" = readonly; ! touch /readonly/forbidden; printf guest > /work/shared; printf persistent > {rootfs_file}'
+            f"""
+test -z "${{MIM_AMBIENT+x}}"
+test ! -e /implicit
+test "$(cat /readonly/source)" = readonly
+if touch /readonly/forbidden; then exit 1; fi
+printf guest > /work/shared
+printf persistent > {rootfs_file}
+"""
         )
         assert (workspace / "shared").read_text() == "guest"
+        assert not (readonly / "forbidden").exists()
         (workspace / "host-edit").write_text("updated")
         execute('test "$(cat /work/host-edit)" = updated')
 
@@ -104,6 +124,21 @@ def test_rootless_gvisor_lifecycle_and_boundary_failures(tmp_path):
         execute(
             f'test "$(cat {rootfs_file})" = persistent; test "$(cat /work/shared)" = guest'
         )
+        # Inspection can fail independently of the resource owner. Stop must
+        # still quiesce that owner and retain the exact binding for a retry.
+        pid = json.loads(engine.observe(machine.target.container_id).configuration)[
+            "boundary"
+        ]["pid"]
+
+        def unavailable(target):
+            raise ProcessError(ProcessResult(("podman",), 125, stderr="inspect failed"))
+
+        with monkeypatch.context() as failure:
+            failure.setattr(engine, "observe", unavailable)
+            with pytest.raises(ProcessError, match="inspect failed"):
+                service.stop(name)
+        assert not Path(f"/proc/{pid}").exists()
+        assert service.store.load(name).target == machine.target
     finally:
         if service.store.exists(name):
             service.delete(name)

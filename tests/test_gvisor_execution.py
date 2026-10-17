@@ -202,6 +202,47 @@ def test_history_kind_cannot_grant_access_to_control_files(tmp_path):
         GvisorSandbox(ProcessRunner(), machine).validate_grants()
 
 
+def test_generated_engine_policy_is_refreshed_without_following_file_aliases(tmp_path):
+    from mimchine.engines.gvisor import ENGINE_POLICY
+
+    sandbox = GvisorSandbox(ProcessRunner(), pending(tmp_path))
+    sandbox.control_files()
+    config = sandbox.binding.control_dir / "containers.conf"
+    config.write_text("[containers]\n# Previous Mim policy\n")
+    sandbox.control_files()
+    assert config.read_text() == ENGINE_POLICY
+
+    other = tmp_path / "other.conf"
+    config.rename(other)
+    config.symlink_to(other)
+    with pytest.raises(ValueError, match="control file"):
+        sandbox.control_files()
+    config.unlink()
+    config.hardlink_to(other)
+    with pytest.raises(ValueError, match="control file"):
+        sandbox.control_files()
+    assert other.read_text() == ENGINE_POLICY
+
+
+@pytest.mark.parametrize("options", [["ro", "rw"], ["rw", "ro"]])
+def test_readonly_grant_cannot_have_conflicting_oci_access_modes(tmp_path, options):
+    source = tmp_path / "workspace"
+    source.mkdir()
+    machine = pending(tmp_path, mounts=(MountSpec(source, "/work", read_only=True),))
+    with pytest.raises(ValueError, match="declared grant"):
+        GvisorSandbox(ProcessRunner(), machine)._verify_mounts(
+            [
+                dict(
+                    destination="/work",
+                    type="bind",
+                    source=str(source),
+                    options=options,
+                )
+            ],
+            observation(machine),
+        )
+
+
 class GvisorEngine:
     name = "podman"
 
@@ -257,6 +298,9 @@ class GvisorEngine:
 
     def release(self, machine):
         self.calls.append(("release", machine.resource_unit))
+
+    def stop(self, machine):
+        self.release(machine)
 
 
 @pytest.fixture
@@ -429,8 +473,13 @@ def test_restricted_sentry_namespace_is_within_delegated_ids():
     verify_uid_map("65534 589821 1", "0 1000 1 1 524288 65536")
 
 
-@pytest.mark.parametrize("failure", ["runtime", "cleanup", "drift"])
-def test_failed_cleanup_quiesces_only_the_owned_budget(tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize("probe", [False, True])
+@pytest.mark.parametrize(
+    "failure", ["runtime", "cleanup", "drift", "inspect", "interrupt"]
+)
+def test_failed_cleanup_quiesces_only_the_owned_budget(
+    tmp_path, monkeypatch, failure, probe
+):
     from mimchine.engines.containers import PodmanEngine
     from mimchine.process import ProcessError, ProcessResult
     from mimchine.resources import SystemdBudget
@@ -438,11 +487,29 @@ def test_failed_cleanup_quiesces_only_the_owned_budget(tmp_path, monkeypatch, fa
     machine = pending(tmp_path, identity=IdentityMode.ROOT)
     target = ContainerAllocation(CID, context(), machine.labels)
     machine = replace(machine, allocation=target)
+    if probe:
+        machine = replace(
+            machine,
+            identity_probe=ContainerAllocation(
+                PROBE_ID, context(), machine.probe_labels
+            ),
+        )
     engine = PodmanEngine(ProcessRunner())
-    found = observation(machine)
+    found = replace(
+        observation(machine, probe=probe),
+        configuration=json.dumps({"boundary": {"status": "running"}}),
+    )
     if failure == "drift":
         found = replace(found, runtime="/untrusted/runtime")
-    monkeypatch.setattr(engine, "observe", lambda target: found)
+
+    def observe(target):
+        if failure == "inspect":
+            raise ProcessError(ProcessResult(("podman",), 125, stderr="inspect failed"))
+        if failure == "interrupt":
+            raise KeyboardInterrupt()
+        return found
+
+    monkeypatch.setattr(engine, "observe", observe)
 
     def distribution(self):
         if failure == "runtime":
@@ -461,11 +528,14 @@ def test_failed_cleanup_quiesces_only_the_owned_budget(tmp_path, monkeypatch, fa
     monkeypatch.setattr(
         SystemdBudget, "remove", lambda self, machine: removed.append(machine.id)
     )
-    with pytest.raises((ValueError, ProcessError)):
-        engine._gvisor_cleanup(machine, ("rm", "-f", CID))
+    captured_id = PROBE_ID if probe else CID
+    with pytest.raises((ValueError, ProcessError, KeyboardInterrupt)):
+        engine._gvisor_cleanup(machine, "rm", probe=probe)
     assert removed == [machine.id]
     if failure == "cleanup":
-        assert commands == [(("rm", "-f", CID), dict(scoped=False, capture=True))]
+        assert commands == [
+            (("rm", "-f", captured_id), dict(scoped=False, capture=True))
+        ]
     else:
         assert not commands
 
@@ -476,6 +546,59 @@ def test_stop_of_missing_container_still_releases_its_owned_budget(service):
     engine.objects.clear()
     assert svc.stop("dev") is RuntimeState.MISSING
     assert ("release", machine.resource_unit) in engine.calls
+
+
+@pytest.mark.parametrize("action", ["stop", "delete"])
+def test_absent_container_cleanup_does_not_need_an_installed_runtime(
+    tmp_path, monkeypatch, action
+):
+    from mimchine.engines.containers import PodmanEngine
+    from mimchine.resources import SystemdBudget
+
+    machine = pending(tmp_path, identity=IdentityMode.ROOT)
+    machine = replace(
+        machine, allocation=ContainerAllocation(CID, context(), machine.labels)
+    )
+    engine = PodmanEngine(ProcessRunner())
+    monkeypatch.setattr(engine, "observe", lambda target: MissingContainer(context()))
+    monkeypatch.setattr(
+        GvisorSandbox,
+        "distribution",
+        lambda self: pytest.fail("absent container needs no runtime"),
+    )
+    removed = []
+    monkeypatch.setattr(
+        SystemdBudget, "remove", lambda self, item: removed.append(item.id)
+    )
+    getattr(engine, action)(machine)
+    assert removed == [machine.id]
+
+
+@pytest.mark.parametrize("action", ["stop", "delete"])
+def test_cleanup_inspection_failure_still_quiesces_through_service(
+    service, monkeypatch, action
+):
+    from mimchine.engines.containers import PodmanEngine
+    from mimchine.process import ProcessError, ProcessResult
+    from mimchine.resources import SystemdBudget
+
+    svc, _ = service
+    machine = create(service)
+    engine = PodmanEngine(ProcessRunner())
+    svc.engines["podman"] = engine
+
+    def unavailable(target):
+        raise ProcessError(ProcessResult(("podman",), 125, stderr="inspect failed"))
+
+    monkeypatch.setattr(engine, "observe", unavailable)
+    removed = []
+    monkeypatch.setattr(
+        SystemdBudget, "remove", lambda self, item: removed.append(item.id)
+    )
+    with pytest.raises(ProcessError, match="inspect failed"):
+        getattr(svc, action)("dev")
+    assert removed == [machine.id]
+    assert svc.store.load("dev").target == machine.target
 
 
 @pytest.mark.parametrize("kind", ["effective", "permitted", "ambient", "inheritable"])

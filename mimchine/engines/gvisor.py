@@ -33,9 +33,13 @@ ENGINE_POLICY = (
 annotations = [{append=false}]
 devices = [{append=false}]
 volumes = [{append=false}]
+mounts = [{append=false}]
 env = [{append=false}]
 env_host = false
 http_proxy = false
+privileged = false
+init = false
+read_only = false
 cgroup_conf = [{append=false}]
 default_sysctls = [{append=false}]
 apparmor_profile = "unconfined"
@@ -117,19 +121,25 @@ class GvisorSandbox:
             ("mounts.conf", b""),
         ):
             path = directory / name
-            if not path.exists():
+            try:
+                metadata = path.lstat()
+            except FileNotFoundError:
                 atomic_write(path, content)
-            metadata = path.lstat()
+                continue
             if (
                 not stat.S_ISREG(metadata.st_mode)
                 or path.resolve() != path
                 or metadata.st_uid != os.getuid()
                 or metadata.st_mode & 0o077
-                or path.read_bytes() != content
+                or metadata.st_nlink != 1
             ):
                 raise ValueError(
-                    f"gVisor control file differs from the bound policy: {path}"
+                    f"gVisor control file must be private, owned and singly linked: {path}"
                 )
+            # These files are generated inputs to the current Mim policy.
+            # Updating them never substitutes for checking the effective OCI spec.
+            if path.read_bytes() != content:
+                atomic_write(path, content)
 
     def validate_grants(self) -> None:
         context = (
@@ -420,10 +430,12 @@ class GvisorSandbox:
             seen.add(target)
             if target in expected:
                 wanted, read_only = expected[target]
+                options = set(mount.get("options", []))
                 if (
                     mount["type"] != "bind"
                     or Path(source).resolve() != wanted
-                    or ("ro" in mount.get("options", [])) != read_only
+                    or {"ro", "rw"} <= options
+                    or ("ro" in options) != read_only
                 ):
                     raise ValueError(
                         f"OCI mount differs from the declared grant: {target}"

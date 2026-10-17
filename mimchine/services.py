@@ -330,13 +330,12 @@ class MachineService:
         with self.store.lock(name):
             machine = self.store.load(name)
             engine = self._engine(machine.spec.engine)
-            observed = self._observe(machine, engine, strict=False)
-            if observed is not None and (
-                observed.state is RuntimeState.RUNNING or machine.gvisor
-            ):
+            if machine.gvisor:
                 engine.stop(machine)
-            elif machine.gvisor:
-                engine.release(machine)
+            else:
+                observed = self._observe(machine, engine, strict=False)
+                if observed is not None and observed.state is RuntimeState.RUNNING:
+                    engine.stop(machine)
             observed = self._observe(machine, engine, strict=False)
             if observed is not None and observed.state is not RuntimeState.STOPPED:
                 raise ValueError(f"machine [{name}] did not reach a stopped state")
@@ -349,15 +348,14 @@ class MachineService:
             machine = self._recover_identity_probe(machine, engine)
             if machine.target is None:
                 machine = self._recover_allocation(machine, engine)
-            observed = (
-                self._observe(machine, engine, strict=False)
-                if machine.target is not None
-                else None
+            remove_container = machine.target is not None and (
+                machine.gvisor is not None
+                or self._observe(machine, engine, strict=False) is not None
             )
             machine = replace(machine, operation=Operation.DELETING, error=None)
             self.store.save(machine)
             try:
-                if observed is not None:
+                if remove_container:
                     engine.delete(machine)
                     if self._observe(machine, engine, strict=False) is not None:
                         raise ValueError(
