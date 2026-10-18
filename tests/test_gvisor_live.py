@@ -1,4 +1,4 @@
-"""Bounded opt-in integration; the image needs /bin/sh, core tools and /var/tmp.
+"""Bounded opt-in integration; image needs Python 3, /bin/sh, core tools, /var/tmp.
 
 MIM_GVISOR_LIVE=1 MIM_GVISOR_RUNTIME=/path/to/runsc \
 MIM_GVISOR_IMAGE=sha256:... uv run pytest -q tests/test_gvisor_live.py
@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -21,6 +22,7 @@ from mimchine.domain import (
     IsolationMode,
     Machine,
     MachineSpec,
+    MissingContainer,
     NetworkMode,
     ResourceSpec,
     RuntimeState,
@@ -41,22 +43,27 @@ pytestmark = [
 ]
 
 
-def test_rootless_gvisor_lifecycle_and_boundary_failures(tmp_path, monkeypatch):
+def _live_service(tmp_path):
     runtime = Path(os.environ["MIM_GVISOR_RUNTIME"]).resolve(strict=True)
     image = os.environ["MIM_GVISOR_IMAGE"]
     if not re.fullmatch(r"(sha256:)?[a-f0-9]{64}", image):
         pytest.fail("MIM_GVISOR_IMAGE must be an existing immutable image ID")
+    service = MachineService(
+        AppConfig(Defaults(), {}, GvisorRuntime(runtime)),
+        MachineStore(tmp_path / "state/machines"),
+        ShellStateManager(tmp_path / "state/shell-state"),
+    )
+    return service, image
+
+
+def test_rootless_gvisor_lifecycle_and_boundary_failures(tmp_path, monkeypatch):
+    service, image = _live_service(tmp_path)
     name = "mim-test-" + uuid4().hex
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     readonly = tmp_path / "readonly"
     readonly.mkdir()
     (readonly / "source").write_text("readonly")
-    service = MachineService(
-        AppConfig(Defaults(), {}, GvisorRuntime(runtime)),
-        MachineStore(tmp_path / "state/machines"),
-        ShellStateManager(tmp_path / "state/shell-state"),
-    )
     engine = service._engine("podman")
     service.engines["podman"] = engine
     context = engine.context()
@@ -180,15 +187,7 @@ printf persistent > {rootfs_file}
 def test_optional_resources_under_independent_outer_containment(
     tmp_path, monkeypatch, resources
 ):
-    runtime = Path(os.environ["MIM_GVISOR_RUNTIME"]).resolve(strict=True)
-    image = os.environ["MIM_GVISOR_IMAGE"]
-    if not re.fullmatch(r"(sha256:)?[a-f0-9]{64}", image):
-        pytest.fail("MIM_GVISOR_IMAGE must be an existing immutable image ID")
-    service = MachineService(
-        AppConfig(Defaults(), {}, GvisorRuntime(runtime)),
-        MachineStore(tmp_path / "machines"),
-        ShellStateManager(tmp_path / "shell-state"),
-    )
+    service, image = _live_service(tmp_path)
     context = service._engine("podman").context()
     outer = Machine(
         str(uuid4()),
@@ -270,3 +269,191 @@ def test_optional_resources_under_independent_outer_containment(
     finally:
         owner.remove(outer)
     assert not outer_group.exists()
+
+
+def _in_terminal(monkeypatch, engine, operation):
+    """Run the ordinary foreground dispatch in a host PTY and capture its output."""
+    import errno
+    import pty
+    import select
+    import subprocess
+    import time
+
+    original = engine.process.run
+    outputs = []
+
+    def run(args, *, foreground=False, cwd=None, env=None, **kwargs):
+        if not foreground:
+            return original(args, foreground=False, cwd=cwd, env=env, **kwargs)
+        master, slave = pty.openpty()
+        child = None
+        output = bytearray()
+        try:
+            child = subprocess.Popen(
+                args,
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                cwd=cwd,
+                env={**os.environ, **(env or {})},
+                start_new_session=True,
+            )
+            os.close(slave)
+            slave = -1
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if select.select([master], [], [], 0.1)[0]:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError as error:
+                        if error.errno != errno.EIO:
+                            raise
+                        break
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                elif child.poll() is not None:
+                    break
+            else:
+                pytest.fail(f"terminal command timed out: {output[-4000:]!r}")
+            status = child.wait(timeout=5)
+        finally:
+            if child is not None:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=5)
+            os.close(master)
+            if slave >= 0:
+                os.close(slave)
+        text = output.decode(errors="replace")
+        assert status == 0, text
+        outputs.append(text)
+        return ProcessResult(tuple(args), status, stdout=text)
+
+    with monkeypatch.context() as terminal:
+        terminal.setattr(engine.process, "run", run)
+        operation()
+    assert len(outputs) == 1, outputs
+    return outputs[0]
+
+
+@pytest.mark.parametrize("console", [False, True], ids=["exec", "initial-console"])
+def test_terminal_identity_reopening_and_login(tmp_path, monkeypatch, console):
+    from mimchine.engines import containers
+
+    service, image = _live_service(tmp_path)
+    engine = service._engine("podman")
+    service.engines["podman"] = engine
+    name = "mim-test-" + uuid4().hex
+    group = None
+    probe = """
+import json
+import os
+import sys
+import termios
+
+def identity(info):
+    return info.st_dev, info.st_ino, info.st_rdev
+
+initial = sys.argv[1] == 'console'
+names = []
+for number in (0,1,2):
+    fd = number
+    if initial:
+        fd = os.open('/proc/1/fd/' + str(number), os.O_RDWR | os.O_NOCTTY)
+    name = os.ttyname(fd)
+    assert name.startswith('/dev/pts/'), name
+    current = os.fstat(fd)
+    assert identity(current) == identity(os.stat(name)), name
+    assert current.st_uid == os.getuid(), (current.st_uid, os.getuid())
+    reopened = os.open(name, os.O_RDWR | os.O_NOCTTY)
+    assert identity(os.fstat(reopened)) == identity(current), name
+    termios.tcgetattr(reopened)
+    os.close(reopened)
+    if initial:
+        os.close(fd)
+    names.append(name)
+assert len(set(names)) == 1, names
+print('MIM_TERMINAL=' + json.dumps(names))
+"""
+    command = containers.create_command
+
+    def create(*args, **kwargs):
+        rendered = command(*args, **kwargs)
+        if console:
+            # Qualify initial OCI consoles without adding a Mim creation option.
+            at = rendered.index("create") + 1
+            return (*rendered[:at], "--tty", *rendered[at:])
+        return rendered
+
+    try:
+        with monkeypatch.context() as creation:
+            creation.setattr(containers, "create_command", create)
+            machine = service.create(
+                CreateOptions(
+                    name,
+                    image=image,
+                    isolation=IsolationMode.GVISOR,
+                    identity=IdentityMode.HOST,
+                    network=NetworkMode.NONE,
+                    shell_state=False,
+                    cpus=1,
+                    memory_mib=1024,
+                    swap_mib=0,
+                    tasks=1024,
+                    start=True,
+                )
+            )
+        owner = SystemdOwner(ProcessRunner())
+        group = owner.verify(machine)
+        for restarted in (False, True):
+            if restarted:
+                assert service.stop(name) is RuntimeState.STOPPED
+                assert service.start(name) is RuntimeState.RUNNING
+                owner.verify(machine)
+            output = _in_terminal(
+                monkeypatch,
+                engine,
+                lambda: service.exec(
+                    name,
+                    ExecSpec(
+                        ("python3", "-c", probe, "console" if console else "exec"),
+                        interactive=not console,
+                        tty=not console,
+                    ),
+                ),
+            )
+            match = re.search(r"MIM_TERMINAL=(\[[^\r\n]+\])", output)
+            assert match, output
+            names = json.loads(match[1])
+            if not console:
+                service.exec(
+                    name,
+                    ExecSpec(
+                        (
+                            "python3",
+                            "-c",
+                            "import os,sys; assert not os.path.exists(sys.argv[1])",
+                            names[0],
+                        )
+                    ),
+                )
+            shell = "/bin/sh -lic " + shlex.quote(
+                'set -e; GPG_TTY=$(tty); export GPG_TTY; test -c "$GPG_TTY"; '
+                'test "$(tty)" = "$GPG_TTY"; printf "MIM_LOGIN_TTY=%s\\n" "$GPG_TTY"'
+            )
+            output = _in_terminal(
+                monkeypatch, engine, lambda: service.enter(name, shell)
+            )
+            assert re.search(r"MIM_LOGIN_TTY=/dev/pts/\d+", output), output
+            assert "ttyname error" not in output, output
+    finally:
+        if service.store.exists(name):
+            captured = service.store.load(name)
+            service.delete(name)
+            if captured.target is not None:
+                assert isinstance(
+                    engine.observe(captured.target.container_id), MissingContainer
+                )
+    assert not service.store.exists(name)
+    assert group is not None and not group.exists()

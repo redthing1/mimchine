@@ -16,7 +16,7 @@ is selected when creating a machine.
 
 ## Install the runtime
 
-Install a versioned [Mim gVisor distribution](https://github.com/redthing1/gvisor),
+Install a versioned [Mim gVisor distribution](https://github.com/redthing1/gvisor/releases),
 including its sidecars, manifest, and fixed runtime profiles. The repository's
 `mim/build packages` produces RPM and Debian packages using a containerized
 build. Mim does not install runtimes or change host container configuration.
