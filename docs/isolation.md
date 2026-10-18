@@ -26,7 +26,7 @@ installation can be selected in `~/.config/mimchine/config.toml`:
 
 ```toml
 [runtimes.gvisor]
-path = "/opt/mim-gvisor/20261012.0-mim.3/runsc"
+path = "/opt/mim-gvisor/20261012.0-mim.4/runsc"
 
 [profiles.isolated]
 image = "app:dev"
@@ -47,7 +47,7 @@ The host needs delegated cgroup v2, a working user systemd manager (254+),
 `busctl`, `systemd-run`, and pasta supporting `--no-splice`. Configured resource
 ceilings require their corresponding host controllers.
 The integration has been exercised with Podman 5.8.4 and Mim gVisor
-20261012.0-mim.3 on x86-64 Linux.
+20261012.0-mim.4 on x86-64 Linux.
 
 ## Resources and access
 
