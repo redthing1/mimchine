@@ -43,9 +43,11 @@ The path must be absolute. Each machine retains its canonical runtime version
 and image ID. Installing a newer release changes selection for new machines;
 keep older distributions installed while machines reference them.
 
-The host needs delegated cgroup v2, a working user systemd manager (254+),
-`busctl`, `systemd-run`, and pasta supporting `--no-splice`. Configured resource
+The host needs delegated cgroup v2, a working user systemd manager, `busctl`,
+`systemd-run` (254+), and pasta supporting `--no-splice`. Configured resource
 ceilings require their corresponding host controllers.
+Use `mim doctor --isolation gvisor` to check local prerequisites; delegation and
+effective isolation are verified when creating a machine.
 The integration has been exercised with Podman 5.8.4 and Mim gVisor
 20261012.0-mim.4 on x86-64 Linux.
 

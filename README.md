@@ -6,6 +6,7 @@ default on local Linux; Docker is also supported, including on macOS.
 ## use
 
 ```sh
+mim doctor
 mim build app:dev -f Containerfile -C .
 mim create dev --image app:dev --workspace .
 mim enter dev
@@ -105,6 +106,7 @@ With a [Mim gVisor distribution](https://github.com/redthing1/gvisor) installed
 on Linux with rootless Podman:
 
 ```sh
+mim doctor --isolation gvisor
 mim create dev --image app:dev --isolation gvisor --workspace .
 mim enter dev
 ```

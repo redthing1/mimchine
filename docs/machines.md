@@ -6,6 +6,31 @@ name does not replace the machine's execution target.
 
 Podman requires local Linux. Docker also supports macOS development.
 
+## Check host prerequisites
+
+```sh
+mim doctor
+mim doctor -P work
+mim doctor --isolation gvisor
+```
+
+Doctor checks base prerequisites for the runner, isolation and network mode in
+your defaults or selected profile. Override them with `--runner`, `--isolation`
+and `--no-net`. Checks cover local tools, rootless ID configuration and networking
+helpers. GVisor adds distribution integrity, user systemd and cgroup v2; Docker
+checks client availability.
+
+Rootless Podman needs `newuidmap`/`newgidmap`, subordinate UID/GID ranges and a
+user-mode networking helper. Current defaults use `pasta`, usually supplied by
+the `passt` package; older configurations may use `slirp4netns`. Package names
+vary by distribution. Offline environments skip networking-helper checks.
+
+Doctor checks standard helpers on PATH; custom Podman helper paths may need
+manual confirmation. It does not initialize the engine, pull images, start
+containers or change host configuration. Errors produce a nonzero exit status;
+warnings need review. Container execution, cgroup delegation and network
+connectivity require verification during actual use.
+
 ## Resource limits
 
 New machines have no Mim-imposed resource ceilings unless configured. Set each

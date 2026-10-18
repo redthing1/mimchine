@@ -5,8 +5,74 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from mimchine import cli
+from mimchine.doctor import Finding
 from mimchine.domain import IdentityMode, NetworkMode
 from mimchine.process import ProcessError, ProcessResult
+
+
+def test_doctor_cli_resolves_options_without_creating_a_service(monkeypatch):
+    captured = {}
+    config = object()
+    monkeypatch.setattr(cli, "load_config", lambda: config)
+
+    def no_service():
+        raise AssertionError("doctor must not initialize machine storage or an engine")
+
+    monkeypatch.setattr(cli.MachineService, "default", no_service)
+
+    def inspect(config_arg, **kwargs):
+        assert config_arg is config
+        captured.update(kwargs)
+        return (Finding("ok", "Podman", "version 5.8.4"),)
+
+    monkeypatch.setattr(cli, "inspect_host", inspect)
+    monkeypatch.setattr(cli, "print_table", lambda *args: None)
+    result = CliRunner().invoke(
+        cli.app,
+        ["doctor", "-r", "podman", "--isolation", "gvisor", "-P", "work", "--no-net"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured == dict(
+        runner="podman", isolation=cli.IsolationMode.GVISOR, profile="work", no_net=True
+    )
+    assert "Prerequisite checks passed" in result.output
+    assert "execution was not tested" in result.output
+
+
+def test_doctor_cli_errors_fail_and_notes_remain_advisory(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", object)
+    monkeypatch.setattr(cli, "print_table", lambda *args: None)
+    for status, exit_code, message in (
+        ("error", 1, "Address the errors"),
+        ("warn", 0, "Review the notes"),
+    ):
+        monkeypatch.setattr(
+            cli,
+            "inspect_host",
+            lambda *args, **kwargs: (Finding(status, "Networking", "Install passt"),),
+        )
+        result = CliRunner().invoke(cli.app, ["doctor"])
+        assert result.exit_code == exit_code, result.output
+        assert message in result.output
+        assert "Prerequisite checks passed" not in result.output
+
+
+def test_doctor_cli_preserves_configuration_keys_in_actionable_output(monkeypatch):
+    monkeypatch.setattr(cli, "load_config", object)
+    monkeypatch.setattr(
+        cli,
+        "inspect_host",
+        lambda *args, **kwargs: (
+            Finding(
+                "error",
+                "gVisor",
+                "Install a runtime or configure [runtimes.gvisor].path.",
+            ),
+        ),
+    )
+    result = CliRunner().invoke(cli.app, ["doctor"])
+    assert result.exit_code == 1, result.output
+    assert "[runtimes.gvisor].path" in result.output
 
 
 def test_build_cli_passes_canonical_options(monkeypatch, tmp_path: Path) -> None:

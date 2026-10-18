@@ -36,6 +36,7 @@ class ProcessRunner:
         check: bool = True,
         cwd: str | Path | None = None,
         env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
     ) -> ProcessResult:
         command = tuple(str(arg) for arg in args)
         if not command:
@@ -51,6 +52,7 @@ class ProcessRunner:
                     cwd=cwd_text,
                     env=None if env is None else {**os.environ, **env},
                     stdout=subprocess.DEVNULL if discard_stdout else None,
+                    timeout=timeout,
                 )
                 result = ProcessResult(command, returncode)
             else:
@@ -68,6 +70,7 @@ class ProcessRunner:
                         else None
                     ),
                     stderr=subprocess.PIPE if capture else None,
+                    timeout=timeout,
                 )
                 result = ProcessResult(
                     command,
@@ -80,6 +83,12 @@ class ProcessRunner:
                 command,
                 127,
                 stderr=f"command not found: {command[0]}",
+            )
+        except subprocess.TimeoutExpired:
+            result = ProcessResult(
+                command,
+                124,
+                stderr=f"command timed out after {timeout}s: {command[0]}",
             )
 
         if check and result.returncode != 0:

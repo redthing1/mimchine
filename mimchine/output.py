@@ -1,5 +1,6 @@
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
 from .services import MachineSummary
 
@@ -66,6 +67,6 @@ def print_table(title: str, columns: list[str], rows: list[tuple[str, ...]]) -> 
         table.add_column(column)
 
     for row in rows:
-        table.add_row(*row)
+        table.add_row(*(Text(value) for value in row))
 
     _stdout.print(table)

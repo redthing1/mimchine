@@ -8,7 +8,9 @@ from typing import Optional
 import typer
 
 from . import __VERSION__
+from .config import load_config
 from .constants import APP_NAME
+from .doctor import inspect_host
 from .domain import (
     ExecSpec,
     IdentityMode,
@@ -69,6 +71,49 @@ def app_callback(
     ),
 ) -> None:
     configure_logging(len(verbose), quiet)
+
+
+@app.command(help="Check local prerequisites without starting containers.")
+def doctor(
+    runner: Optional[str] = typer.Option(
+        None, "--runner", "-r", help="podman or docker."
+    ),
+    isolation: Optional[IsolationMode] = typer.Option(
+        None, "--isolation", help="native or gvisor."
+    ),
+    profile: Optional[str] = typer.Option(
+        None, "--profile", "-P", help="Profile to check."
+    ),
+    no_net: bool = typer.Option(
+        False, "--no-net", help="Check an offline environment."
+    ),
+) -> None:
+    def action() -> None:
+        findings = inspect_host(
+            load_config(),
+            runner=runner,
+            isolation=isolation,
+            profile=profile,
+            no_net=no_net,
+        )
+        print_table(
+            "Host prerequisites",
+            ["status", "check", "result"],
+            [(finding.status, finding.name, finding.detail) for finding in findings],
+        )
+        failed = any(finding.status == "error" for finding in findings)
+        if failed:
+            typer.echo("Address the errors above, then run mim doctor again.")
+        elif any(finding.status == "warn" for finding in findings):
+            typer.echo("Review the notes above. Container execution was not tested.")
+        else:
+            typer.echo(
+                "Prerequisite checks passed. Container execution was not tested."
+            )
+        if failed:
+            raise typer.Exit(1)
+
+    _run(action)
 
 
 @app.command(no_args_is_help=True)
