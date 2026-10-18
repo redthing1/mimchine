@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .config import AppConfig, validate_runner
-from .domain import IdentityMode, IsolationMode, NetworkMode
+from .config import AppConfig, read_resources, validate_runner
+from .domain import IdentityMode, IsolationMode, NetworkMode, ResourceSpec
 
 PROFILE_KEYS = {
     "image",
@@ -31,6 +31,8 @@ PROFILE_KEYS = {
     "container_args",
     "cpus",
     "memory",
+    "swap",
+    "tasks",
 }
 
 
@@ -54,8 +56,7 @@ class Profile:
     gpu: bool | None = None
     job_limits: bool | None = None
     container_args: tuple[str, ...] = ()
-    cpus: int | None = None
-    memory: int | None = None
+    resources: ResourceSpec = ResourceSpec()
 
 
 def load_profile(config: AppConfig, name: str | None) -> Profile:
@@ -105,8 +106,7 @@ def read_profile(name: str, data: dict[str, Any]) -> Profile:
         gpu=_optional_bool(data.get("gpu")),
         job_limits=_optional_bool(data.get("job_limits")),
         container_args=_read_str_tuple(data, "container_arg", "container_args"),
-        cpus=_optional_int(data.get("cpus")),
-        memory=_optional_int(data.get("memory")),
+        resources=read_resources(data),
     )
 
 
@@ -140,14 +140,4 @@ def _optional_bool(value: Any) -> bool | None:
         return None
     if not isinstance(value, bool):
         raise ValueError("expected boolean value")
-    return value
-
-
-def _optional_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError("expected integer value")
-    if value <= 0:
-        raise ValueError("expected positive integer value")
     return value

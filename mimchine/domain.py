@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MACHINE_NAME_PATTERN = re.compile(
     r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?"
     r"(?:\.[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)*"
@@ -173,21 +173,26 @@ class PortBind:
 class ResourceSpec:
     cpus: int | None = None
     memory_mib: int | None = None
+    swap_mib: int | None = None
+    tasks: int | None = None
 
     def __post_init__(self) -> None:
-        for field_name in ("cpus", "memory_mib"):
+        for field_name in ("cpus", "memory_mib", "swap_mib", "tasks"):
             value = getattr(self, field_name)
             if value is None:
                 continue
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError(f"{field_name} must be an integer")
-            if value <= 0:
-                raise ValueError(f"{field_name} must be positive")
+            if value < 0 or (value == 0 and field_name != "swap_mib"):
+                qualifier = "non-negative" if field_name == "swap_mib" else "positive"
+                raise ValueError(f"{field_name} must be {qualifier}")
 
     def to_data(self) -> dict[str, int | None]:
         return {
             "cpus": self.cpus,
             "memory_mib": self.memory_mib,
+            "swap_mib": self.swap_mib,
+            "tasks": self.tasks,
         }
 
     @classmethod
@@ -195,6 +200,8 @@ class ResourceSpec:
         return cls(
             cpus=data.get("cpus"),
             memory_mib=data.get("memory_mib"),
+            swap_mib=data.get("swap_mib"),
+            tasks=data.get("tasks"),
         )
 
 
@@ -615,13 +622,6 @@ class Machine:
                 raise ValueError("SSH-agent grant does not match machine intent")
             if self.spec.shell_state != (self.gvisor.history_source is not None):
                 raise ValueError("shell history grant does not match machine intent")
-            if (
-                self.spec.resources.cpus is None
-                or self.spec.resources.memory_mib is None
-            ):
-                raise ValueError(
-                    "gVisor machine requires a finite CPU and memory budget"
-                )
             if self.binding is not None:
                 if self.binding.runtime != str(self.gvisor.entrypoint):
                     raise ValueError(

@@ -1,7 +1,8 @@
-"""A machine's aggregate budget in the local user systemd manager."""
+"""Machine process ownership and optional aggregate limits through user systemd."""
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -10,10 +11,10 @@ from uuid import uuid4
 
 from .domain import Machine
 from .process import ProcessError, ProcessRunner
-from .scope import HOST_TASK_LIMIT, check_limits
+from .scope import check_limits, identity
 
 
-class SystemdBudget:
+class SystemdOwner:
     def __init__(self, process: ProcessRunner, *, root: Path = Path("/sys/fs/cgroup")):
         self.process, self.root = process, root
 
@@ -64,14 +65,17 @@ class SystemdBudget:
         state = self._state(machine)
         if state.get("LoadState") == "not-found":
             resources = machine.spec.resources
-            properties = (
-                ("Description", "s", f"mimchine {machine.id}"),
-                ("MemoryMax", "t", str(resources.memory_mib * 1024 * 1024)),
-                ("MemorySwapMax", "t", "0"),
-                ("CPUQuotaPerSecUSec", "t", str(resources.cpus * 1000000)),
-                ("CPUQuotaPeriodUSec", "t", "100000"),
-                ("TasksMax", "t", str(HOST_TASK_LIMIT)),
-            )
+            properties = [("Description", "s", f"mimchine {machine.id}")]
+            for name, value, scale in (
+                ("MemoryMax", resources.memory_mib, 1024 * 1024),
+                ("MemorySwapMax", resources.swap_mib, 1024 * 1024),
+                ("CPUQuotaPerSecUSec", resources.cpus, 1000000),
+                ("TasksMax", resources.tasks, 1),
+            ):
+                if value is not None:
+                    properties.append((name, "t", str(value * scale)))
+            if resources.cpus is not None:
+                properties.append(("CPUQuotaPeriodUSec", "t", "100000"))
             self.process.run(
                 (
                     "busctl",
@@ -109,6 +113,13 @@ class SystemdBudget:
 
     def verify(self, machine: Machine, *, state: dict[str, str] | None = None) -> Path:
         state = self._state(machine) if state is None else state
+        group = self._group(machine, state)
+        if not group.is_dir():
+            raise ValueError("machine resource owner cgroup is absent")
+        check_limits(group, **machine.spec.resources.to_data())
+        return group
+
+    def _group(self, machine: Machine, state: dict[str, str]) -> Path:
         relative = Path(state.get("ControlGroup", ""))
         if (
             state.get("ActiveState") != "active"
@@ -120,15 +131,20 @@ class SystemdBudget:
             raise ValueError(
                 "machine resource owner is absent or outside the local user manager"
             )
-        group = self.root / str(relative).lstrip("/")
-        check_limits(
-            group, machine.spec.resources.cpus, machine.spec.resources.memory_mib
-        )
-        return group
+        return self.root / str(relative).lstrip("/")
 
     def command(self, machine: Machine, args: tuple[str, ...]) -> tuple[str, ...]:
-        # The helper checks again inside the scope. In particular, systemd must
-        # not recreate a vanished parent with unlimited defaults during a race.
+        group = self.verify(machine)
+        device, inode = identity(group)
+        # Validate ownership after capturing the directory identity. A slice
+        # recreated between the first query and stat must not be accepted.
+        if self._group(machine, self._state(machine)) != group or identity(group) != (
+            device,
+            inode,
+        ):
+            raise ValueError("machine resource owner changed before dispatch")
+        # The helper checks the same directory inside the new scope, even when
+        # there are no ceilings to distinguish an accidentally recreated slice.
         return (
             "systemd-run",
             "--user",
@@ -143,8 +159,9 @@ class SystemdBudget:
             "-I",
             str(Path(__file__).with_name("scope.py")),
             machine.resource_unit,
-            str(machine.spec.resources.cpus),
-            str(machine.spec.resources.memory_mib),
+            str(device),
+            str(inode),
+            json.dumps(machine.spec.resources.to_data(), separators=(",", ":")),
             *args,
         )
 

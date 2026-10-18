@@ -340,7 +340,7 @@ def test_image_identity_is_prepared_and_journaled_before_main_allocation(service
     machine = create(service)
     assert machine.operation is Operation.READY
     assert machine.gvisor.image_user == ImageUser(1234, 5678)
-    assert machine.spec.resources == ResourceSpec(2, 4096)
+    assert machine.spec.resources == ResourceSpec()
     assert machine.gvisor.image_id == IMAGE_ID
     assert machine.identity_probe is None
     assert [action for action, _ in engine.calls] == [
@@ -482,7 +482,7 @@ def test_failed_cleanup_quiesces_only_the_owned_budget(
 ):
     from mimchine.engines.containers import PodmanEngine
     from mimchine.process import ProcessError, ProcessResult
-    from mimchine.resources import SystemdBudget
+    from mimchine.resources import SystemdOwner
 
     machine = pending(tmp_path, identity=IdentityMode.ROOT)
     target = ContainerAllocation(CID, context(), machine.labels)
@@ -526,7 +526,7 @@ def test_failed_cleanup_quiesces_only_the_owned_budget(
     monkeypatch.setattr(GvisorSandbox, "run", cleanup)
     removed = []
     monkeypatch.setattr(
-        SystemdBudget, "remove", lambda self, machine: removed.append(machine.id)
+        SystemdOwner, "remove", lambda self, machine: removed.append(machine.id)
     )
     captured_id = PROBE_ID if probe else CID
     with pytest.raises((ValueError, ProcessError, KeyboardInterrupt)):
@@ -553,7 +553,7 @@ def test_absent_container_cleanup_does_not_need_an_installed_runtime(
     tmp_path, monkeypatch, action
 ):
     from mimchine.engines.containers import PodmanEngine
-    from mimchine.resources import SystemdBudget
+    from mimchine.resources import SystemdOwner
 
     machine = pending(tmp_path, identity=IdentityMode.ROOT)
     machine = replace(
@@ -568,7 +568,7 @@ def test_absent_container_cleanup_does_not_need_an_installed_runtime(
     )
     removed = []
     monkeypatch.setattr(
-        SystemdBudget, "remove", lambda self, item: removed.append(item.id)
+        SystemdOwner, "remove", lambda self, item: removed.append(item.id)
     )
     getattr(engine, action)(machine)
     assert removed == [machine.id]
@@ -580,7 +580,7 @@ def test_cleanup_inspection_failure_still_quiesces_through_service(
 ):
     from mimchine.engines.containers import PodmanEngine
     from mimchine.process import ProcessError, ProcessResult
-    from mimchine.resources import SystemdBudget
+    from mimchine.resources import SystemdOwner
 
     svc, _ = service
     machine = create(service)
@@ -593,7 +593,7 @@ def test_cleanup_inspection_failure_still_quiesces_through_service(
     monkeypatch.setattr(engine, "observe", unavailable)
     removed = []
     monkeypatch.setattr(
-        SystemdBudget, "remove", lambda self, item: removed.append(item.id)
+        SystemdOwner, "remove", lambda self, item: removed.append(item.id)
     )
     with pytest.raises(ProcessError, match="inspect failed"):
         getattr(svc, action)("dev")

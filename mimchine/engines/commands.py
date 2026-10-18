@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from ..domain import MachineSpec, MountSpec, NetworkMode
+from ..domain import IsolationMode, MachineSpec, MountSpec, NetworkMode
 from .lifecycle import KEEPALIVE_ARGV
 
 
@@ -32,6 +32,15 @@ def create_command(
         args.extend(("--cpus", str(spec.resources.cpus)))
     if spec.resources.memory_mib:
         args.extend(("--memory", f"{spec.resources.memory_mib}m"))
+        # Engine defaults couple swap to memory. Mim leaves swap independent.
+        swap = spec.resources.swap_mib
+        total = "-1" if swap is None else f"{spec.resources.memory_mib + swap}m"
+        args.append(f"--memory-swap={total}")
+    elif spec.resources.swap_mib is not None and spec.isolation is IsolationMode.NATIVE:
+        raise ValueError("native swap limits require a memory limit")
+    args.append(
+        f"--pids-limit={spec.resources.tasks if spec.resources.tasks is not None else -1}"
+    )
     for env in spec.env:
         args.extend(("-e", env))
     if spec.workdir:

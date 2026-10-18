@@ -202,9 +202,20 @@ def create(
         show_default=False,
         help="Allow per-command memory limits (Podman, Linux cgroup v2, crun).",
     ),
-    cpus: Optional[int] = typer.Option(None, "--cpus", "-c", min=1, help="vCPU count."),
+    cpus: Optional[int] = typer.Option(
+        None, "--cpus", "-c", min=1, help="CPU-time ceiling in CPU equivalents."
+    ),
     mem: Optional[int] = typer.Option(
-        None, "--mem", "--memory", min=1, help="Memory MiB."
+        None, "--mem", "--memory", min=1, help="Machine memory ceiling in MiB."
+    ),
+    swap: Optional[int] = typer.Option(
+        None, "--swap", min=0, help="Swap ceiling in MiB; zero disables swap."
+    ),
+    tasks: Optional[int] = typer.Option(
+        None,
+        "--tasks",
+        min=1,
+        help="Host-task ceiling (processes and threads).",
     ),
     root: bool = typer.Option(False, "--root", help="Run as root."),
     host_user: bool = typer.Option(False, "--host-user", help="Run as the host user."),
@@ -252,6 +263,8 @@ def create(
             job_limits=job_limits,
             cpus=cpus,
             memory_mib=mem,
+            swap_mib=swap,
+            tasks=tasks,
             identity=_identity_from_flags(root, host_user),
             shell_state=shell_state,
             container_args=tuple(container_args),
@@ -547,6 +560,30 @@ def inspect(name: str = typer.Argument(..., help="Machine name.")) -> None:
                 ("shell", spec.shell or service.config.defaults.shell or "auto"),
                 ("gpu", "yes" if spec.gpu else "no"),
                 ("job limits", "yes" if spec.job_limits else "no"),
+                (
+                    "CPU ceiling",
+                    str(spec.resources.cpus)
+                    if spec.resources.cpus is not None
+                    else "inherit",
+                ),
+                (
+                    "memory ceiling (MiB)",
+                    str(spec.resources.memory_mib)
+                    if spec.resources.memory_mib is not None
+                    else "inherit",
+                ),
+                (
+                    "swap ceiling (MiB)",
+                    str(spec.resources.swap_mib)
+                    if spec.resources.swap_mib is not None
+                    else "inherit",
+                ),
+                (
+                    "host-task ceiling",
+                    str(spec.resources.tasks)
+                    if spec.resources.tasks is not None
+                    else "inherit",
+                ),
                 ("created", machine.created_at),
             ],
         )

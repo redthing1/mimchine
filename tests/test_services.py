@@ -92,6 +92,8 @@ def test_create_merges_resource_defaults_profile_and_cli(tmp_path: Path) -> None
             resources=ResourceSpec(
                 cpus=2,
                 memory_mib=4096,
+                swap_mib=128,
+                tasks=1024,
             )
         ),
         profiles={
@@ -99,6 +101,8 @@ def test_create_merges_resource_defaults_profile_and_cli(tmp_path: Path) -> None
                 "image": "fedora:latest",
                 "cpus": 4,
                 "memory": 8192,
+                "swap": 64,
+                "tasks": 512,
             }
         },
     )
@@ -114,11 +118,15 @@ def test_create_merges_resource_defaults_profile_and_cli(tmp_path: Path) -> None
             name="dev",
             profile="vm",
             cpus=6,
+            swap_mib=0,
+            tasks=256,
         )
     )
 
     assert record.spec.resources.cpus == 6
     assert record.spec.resources.memory_mib == 8192
+    assert record.spec.resources.swap_mib == 0
+    assert record.spec.resources.tasks == 256
 
 
 def test_create_can_start_machine(tmp_path: Path) -> None:

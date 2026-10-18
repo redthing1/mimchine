@@ -80,6 +80,8 @@ class CreateOptions:
     job_limits: bool | None = None
     cpus: int | None = None
     memory_mib: int | None = None
+    swap_mib: int | None = None
+    tasks: int | None = None
     identity: IdentityMode | None = None
     shell_state: bool | None = None
     container_args: tuple[str, ...] = ()
@@ -546,10 +548,6 @@ class MachineService:
         isolation = _first(
             options.isolation, profile.isolation, self.config.defaults.isolation
         )
-        if isolation is IsolationMode.GVISOR:
-            resources = ResourceSpec(
-                cpus=resources.cpus or 2, memory_mib=resources.memory_mib or 4096
-            )
         mounts = _mounts(options, profile)
         shell_state_enabled = _bool_option(
             options.shell_state, profile.shell_state, True
@@ -642,14 +640,18 @@ def _resource_spec(
     return ResourceSpec(
         cpus=_first(
             options.cpus,
-            profile.cpus,
+            profile.resources.cpus,
             defaults.resources.cpus,
         ),
         memory_mib=_first(
             options.memory_mib,
-            profile.memory,
+            profile.resources.memory_mib,
             defaults.resources.memory_mib,
         ),
+        swap_mib=_first(
+            options.swap_mib, profile.resources.swap_mib, defaults.resources.swap_mib
+        ),
+        tasks=_first(options.tasks, profile.resources.tasks, defaults.resources.tasks),
     )
 
 

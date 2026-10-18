@@ -20,6 +20,8 @@ SUPPORTED_DEFAULT_KEYS = (
     "shell",
     "cpus",
     "memory",
+    "swap",
+    "tasks",
     "isolation",
 )
 
@@ -149,22 +151,18 @@ def _read_defaults(data: Any) -> Defaults:
         runner=runner,
         network=network,
         shell=shell,
-        resources=ResourceSpec(
-            cpus=_optional_int(data.get("cpus")),
-            memory_mib=_optional_int(data.get("memory")),
-        ),
+        resources=read_resources(data),
         isolation=IsolationMode(str(data.get("isolation", "native"))),
     )
 
 
-def _optional_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError("expected integer value")
-    if value <= 0:
-        raise ValueError("expected positive integer value")
-    return value
+def read_resources(data: dict[str, Any]) -> ResourceSpec:
+    return ResourceSpec(
+        cpus=data.get("cpus"),
+        memory_mib=data.get("memory"),
+        swap_mib=data.get("swap"),
+        tasks=data.get("tasks"),
+    )
 
 
 def validate_builder(name: str) -> str:

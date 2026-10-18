@@ -56,6 +56,21 @@ def test_resource_values_must_be_integers():
         ResourceSpec(cpus=True)
 
 
+@pytest.mark.parametrize("field", ["cpus", "memory_mib", "swap_mib", "tasks"])
+@pytest.mark.parametrize("value", [True, "1", 1.5, -1])
+def test_resource_fields_reject_invalid_ceilings(field, value):
+    with pytest.raises(ValueError):
+        ResourceSpec(**{field: value})
+
+
+def test_swap_can_be_disabled_without_setting_other_ceilings():
+    resources = ResourceSpec(swap_mib=0)
+    assert ResourceSpec.from_data(resources.to_data()) == resources
+    for field in ("cpus", "memory_mib", "tasks"):
+        with pytest.raises(ValueError):
+            ResourceSpec(**{field: 0})
+
+
 def test_ports_must_be_integers():
     with pytest.raises(ValueError, match="integer"):
         PortBind(True, 80)
@@ -87,7 +102,7 @@ def test_port_fields_must_be_numbers():
         PortBind.from_data({"host": "8080", "guest": 80})
 
 
-@pytest.mark.parametrize("version", [1, 2, "3", True])
+@pytest.mark.parametrize("version", [1, 2, 3, "4", True])
 def test_execution_schema_does_not_accept_old_or_coerced_versions(version):
     data = make_machine().to_data()
     data["schema_version"] = version

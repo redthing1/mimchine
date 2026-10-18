@@ -73,6 +73,10 @@ def test_create_cli_passes_machine_intent(monkeypatch, tmp_path: Path) -> None:
             "3",
             "--mem",
             "512",
+            "--swap",
+            "0",
+            "--tasks",
+            "256",
             "--container-arg=--device=vendor.example/gpu=all",
         ],
     )
@@ -91,6 +95,8 @@ def test_create_cli_passes_machine_intent(monkeypatch, tmp_path: Path) -> None:
     assert options.job_limits is True
     assert options.cpus == 3
     assert options.memory_mib == 512
+    assert options.swap_mib == 0
+    assert options.tasks == 256
     assert options.container_args == ("--device=vendor.example/gpu=all",)
 
 

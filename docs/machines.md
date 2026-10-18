@@ -6,6 +6,26 @@ name does not replace the machine's execution target.
 
 Podman requires local Linux. Docker also supports macOS development.
 
+## Resource limits
+
+New machines have no Mim-imposed resource ceilings unless configured. Set each
+ceiling independently at creation:
+
+```sh
+mim create dev --image app:dev --cpus 4 --memory 8192
+mim create isolated --image app:dev --isolation gvisor --swap 0 --tasks 512
+```
+
+`--cpus` limits aggregate CPU time in CPU equivalents. `--memory` and `--swap`
+are separate ceilings in MiB; zero swap disables swapping. `--tasks` limits host
+processes and threads. GVisor includes runtime and exec helpers in the machine's
+aggregate limits. Native engines require `--memory` when setting `--swap`.
+
+The config keys are `cpus`, `memory`, `swap`, and `tasks`, in `[defaults]` or a
+profile. Each value resolves from command line, profile, then defaults. Unset
+values inherit host policy. `mim inspect` shows the saved ceilings; existing
+machines retain their resource settings.
+
 ## Inspect and control a machine
 
 ```sh

@@ -110,6 +110,18 @@ class MachineStore:
             raise MigrationRequiredError(
                 f"machine [{name}] requires migration; run: mim migrate {name} --plan"
             )
+        if type(version) is int and version == 3:
+            # Normalize the old implicit gVisor policy at the record boundary.
+            # Reads stay read-only; the next ordinary save writes schema 4.
+            spec = data["spec"]
+            resources = spec.setdefault("resources", {})
+            if spec["isolation"] == "gvisor":
+                if resources.get("cpus") is None or resources.get("memory_mib") is None:
+                    raise ValueError(
+                        "schema-3 gVisor record has no finite CPU/memory policy"
+                    )
+                resources.update(swap_mib=0, tasks=1024)
+            data["schema_version"] = version = SCHEMA_VERSION
         if type(version) is not int or version != SCHEMA_VERSION:
             raise ValueError(f"unsupported machine record schema: {version!r}")
         machine = Machine.from_data(data)

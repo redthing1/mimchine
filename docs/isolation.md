@@ -43,20 +43,24 @@ The path must be absolute. Each machine retains its canonical runtime version
 and image ID. Installing a newer release changes selection for new machines;
 keep older distributions installed while machines reference them.
 
-The host needs cgroup v2 with delegated CPU, memory, swap, and task limits, a
-working user systemd manager (254+), `busctl`, `systemd-run`, and pasta supporting
-`--no-splice`.
+The host needs delegated cgroup v2, a working user systemd manager (254+),
+`busctl`, `systemd-run`, and pasta supporting `--no-splice`. Configured resource
+ceilings require their corresponding host controllers.
 The integration has been exercised with Podman 5.8.4 and Mim gVisor
 20261012.0-mim.3 on x86-64 Linux.
 
 ## Resources and access
 
-GVisor machines default to two CPUs and 4096 MiB. Override them with `--cpus`
-and `--memory`, or the corresponding profile/default settings. The host budget
-covers the sandbox, filesystem server, network helper, and concurrent exec
-sessions. Swap is disabled. Mim verifies the effective boundary before starting
-image code and before dispatching commands. Stop and delete also quiesce the
-machine's owned host processes.
+Resource ceilings are opt-in and independent of isolation. Use `--cpus`,
+`--memory`, `--swap`, and `--tasks`, or the corresponding profile/default settings.
+Unset ceilings inherit host policy; `--swap 0` disables swap. GVisor ceilings
+cover the sandbox, filesystem server, network helper, and concurrent exec
+sessions. The task ceiling counts host processes and threads, rather than guest
+processes.
+
+Mim verifies machine process ownership and every requested ceiling before
+starting image code and dispatching commands. Stop and delete quiesce the
+machine's owned host processes even when no ceilings are configured.
 
 Writable rootfs changes, workspaces, shell history, stop/start, and interactive
 shells retain the normal Mim workflow. Host-edited workspace files remain

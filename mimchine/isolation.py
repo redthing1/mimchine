@@ -12,7 +12,6 @@ from .config import GvisorRuntime
 from .domain import IdentityMode, IsolationMode, MachineSpec, MountSpec, NetworkMode
 from .engines.commands import create_command
 from .paths import cache_dir, config_dir, data_dir
-from .scope import HOST_TASK_LIMIT
 
 PASTA_NETWORK = "--network=pasta:--no-splice"
 
@@ -51,10 +50,8 @@ CAPABILITIES = frozenset(
 )
 
 
-def gvisor_create_args(memory: int | str, unit: str) -> tuple[str, ...]:
+def gvisor_create_args(unit: str) -> tuple[str, ...]:
     return (
-        f"--pids-limit={HOST_TASK_LIMIT}",
-        f"--memory-swap={memory}m",
         "--cgroupns=private",
         "--cgroups=enabled",
         "--cgroup-parent",
@@ -163,9 +160,7 @@ def plan_machine(
     )
     policy = GvisorPolicy(runtime, spec.network, spec.ssh_agent)
     engine_args = (
-        *gvisor_create_args(
-            spec.resources.memory_mib or "<memory-mib>", "mim<machine-uuid>.slice"
-        ),
+        *gvisor_create_args("mim<machine-uuid>.slice"),
         "--tz=local",
         *((PASTA_NETWORK,) if spec.network is NetworkMode.DEFAULT else ()),
     )
@@ -329,9 +324,7 @@ def _native_plan(spec: MachineSpec) -> MachinePlan:
             spec,
             prefix=prefix,
             identity_args=_identity_template(spec),
-            engine_args=("--tz=local", "--pids-limit=-1")
-            if spec.engine == "podman"
-            else (),
+            engine_args=("--tz=local",) if spec.engine == "podman" else (),
             feature_args=features,
             labels=(("mimchine.id", "<machine-id>"),),
         ),
@@ -417,7 +410,7 @@ def _gvisor_requirements() -> tuple[Requirement, ...]:
         ),
         Requirement(
             "resources",
-            "Verify actual host CPU, memory, swap and task limits covering Sentry, Gofer, networking and concurrent exec helpers before dispatch.",
+            "Verify machine cgroup ownership and every requested resource ceiling covering Sentry, Gofer, networking and concurrent exec helpers before dispatch.",
         ),
         Requirement(
             "lifecycle",

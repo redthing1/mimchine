@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from .domain import (
+    SCHEMA_VERSION,
     ContainerAllocation,
     IsolationMode,
     Machine,
@@ -124,7 +125,7 @@ class MigrationService:
             data = json.loads(source)
             if not isinstance(data, dict):
                 raise ValueError("machine record must be an object")
-            if data.get("schema_version") == 3:
+            if data.get("schema_version") in (3, SCHEMA_VERSION):
                 current = self.store.load(name)
                 if (
                     current.id == machine.id

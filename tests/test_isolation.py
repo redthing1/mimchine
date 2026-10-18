@@ -73,8 +73,8 @@ def test_gvisor_policy_preserves_rootfs_and_host_editable_workspaces(tmp_path):
     assert plan.policy.profile == "online"
     assert plan.policy.entrypoint == "/opt/runsc/release/profiles/online/runsc"
     assert not any(arg.startswith("--runtime-flag") for arg in plan.create)
-    assert "--pids-limit=1024" in plan.create
-    assert "--pids-limit=-1" not in plan.create
+    assert "--pids-limit=-1" in plan.create
+    assert "--memory-swap=-1" in plan.create
     assert "--security-opt=no-new-privileges" in plan.create
     assert "127.0.0.1:8080:80" in plan.create
     assert f"{workspace}:/work/project:rw" in plan.create
@@ -82,7 +82,67 @@ def test_gvisor_policy_preserves_rootfs_and_host_editable_workspaces(tmp_path):
     assert plan.create[plan.create.index("--cpus") + 1] == "2"
     assert "--network=pasta:--no-splice" in plan.create
     assert "<image-uid>" in " ".join(plan.create)
-    assert data["machine"]["resources"] == {"cpus": 2, "memory_mib": 1024}
+    assert data["machine"]["resources"] == ResourceSpec(2, 1024).to_data()
+
+
+@pytest.mark.parametrize(
+    "engine,isolation",
+    [
+        ("podman", IsolationMode.NATIVE),
+        ("docker", IsolationMode.NATIVE),
+        ("podman", IsolationMode.GVISOR),
+    ],
+)
+@pytest.mark.parametrize(
+    "resources,expected",
+    [
+        (ResourceSpec(), ()),
+        (ResourceSpec(cpus=3), ("--cpus", "3")),
+        (ResourceSpec(memory_mib=512), ("--memory", "512m", "--memory-swap=-1")),
+        (
+            ResourceSpec(memory_mib=512, swap_mib=0),
+            ("--memory", "512m", "--memory-swap=512m"),
+        ),
+        (
+            ResourceSpec(memory_mib=512, swap_mib=128),
+            ("--memory", "512m", "--memory-swap=640m"),
+        ),
+        (ResourceSpec(tasks=256), ("--pids-limit=256",)),
+    ],
+)
+def test_resource_arguments_have_no_isolation_specific_defaults(
+    engine, isolation, resources, expected
+):
+    spec = machine(engine=engine, isolation=isolation, resources=resources)
+    plan = plan_machine(
+        spec, GvisorRuntime(Path("/opt/runsc/release/runsc")), protected_paths=()
+    )
+    args = plan.create
+    for item in expected:
+        assert item in args
+    assert ("--cpus" in args) == (resources.cpus is not None)
+    assert ("--memory" in args) == (resources.memory_mib is not None)
+    assert any(item.startswith("--memory-swap=") for item in args) == (
+        resources.memory_mib is not None
+    )
+    assert f"--pids-limit={resources.tasks or -1}" in args
+
+
+def test_gvisor_swap_only_policy_does_not_invent_a_memory_ceiling():
+    plan = gvisor_plan(machine(resources=ResourceSpec(swap_mib=0)))
+    assert "--memory" not in plan.create
+    assert not any(item.startswith("--memory-swap=") for item in plan.create)
+    assert plan.spec.resources == ResourceSpec(swap_mib=0)
+
+
+@pytest.mark.parametrize("engine", ["podman", "docker"])
+def test_native_swap_only_policy_is_refused_before_allocating(engine):
+    with pytest.raises(ValueError, match="swap limits require a memory limit"):
+        plan_machine(
+            machine(engine=engine, resources=ResourceSpec(swap_mib=0)),
+            GvisorRuntime(),
+            protected_paths=(),
+        )
 
 
 def test_every_gvisor_lifecycle_template_has_the_same_policy_and_id():

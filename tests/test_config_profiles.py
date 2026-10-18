@@ -36,6 +36,8 @@ def test_config_accepts_resource_defaults(tmp_path: Path) -> None:
                 "[defaults]",
                 "cpus = 2",
                 "memory = 4096",
+                "swap = 0",
+                "tasks = 512",
             )
         ),
         encoding="utf-8",
@@ -45,6 +47,8 @@ def test_config_accepts_resource_defaults(tmp_path: Path) -> None:
 
     assert config.defaults.resources.cpus == 2
     assert config.defaults.resources.memory_mib == 4096
+    assert config.defaults.resources.swap_mib == 0
+    assert config.defaults.resources.tasks == 512
 
 
 def test_load_config_rejects_unknown_top_level_table(tmp_path: Path) -> None:
@@ -82,6 +86,8 @@ def test_read_profile_normalizes_supported_fields() -> None:
             "job_limits": True,
             "container_args": ["--device=vendor.example/gpu=all"],
             "cpus": 2,
+            "swap": 0,
+            "tasks": 256,
         },
     )
 
@@ -97,7 +103,9 @@ def test_read_profile_normalizes_supported_fields() -> None:
     assert profile.gpu is True
     assert profile.job_limits is True
     assert profile.container_args == ("--device=vendor.example/gpu=all",)
-    assert profile.cpus == 2
+    assert profile.resources.cpus == 2
+    assert profile.resources.swap_mib == 0
+    assert profile.resources.tasks == 256
 
 
 def test_read_profile_rejects_unknown_fields() -> None:
@@ -112,7 +120,7 @@ def test_read_profile_rejects_non_bool_gpu() -> None:
 
 @pytest.mark.parametrize(
     ("value", "message"),
-    [(True, "expected integer value"), (0, "expected positive integer value")],
+    [(True, "must be an integer"), (0, "must be positive")],
 )
 def test_read_profile_rejects_invalid_resource(value, message: str) -> None:
     with pytest.raises(ValueError, match=message):

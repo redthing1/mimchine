@@ -20,7 +20,7 @@ from ..domain import (
 from ..gvisor import verify_runtime
 from ..isolation import CAPABILITIES, control_paths, validate_gvisor
 from ..process import ProcessResult, ProcessRunner
-from ..resources import SystemdBudget
+from ..resources import SystemdOwner
 from ..scope import cgroup_path, check_limits
 from ..state import atomic_write, ensure_directory
 from .lifecycle import IDENTITY_PROBE_ARGV, KEEPALIVE_ARGV
@@ -65,7 +65,7 @@ class GvisorSandbox:
             raise ValueError("gVisor preparation requires a bound distribution")
         self.process, self.machine, self.probe = process, machine, probe
         self.binding = machine.gvisor
-        self.budget = SystemdBudget(process)
+        self.owner = SystemdOwner(process)
         self._verified = False
 
     @property
@@ -167,7 +167,7 @@ class GvisorSandbox:
         self.distribution()
         self.control_files()
         self.validate_grants()
-        self.budget.ensure(self.machine)
+        self.owner.ensure(self.machine)
 
     @contextmanager
     def grants(self):
@@ -206,7 +206,7 @@ class GvisorSandbox:
     ) -> ProcessResult:
         command = (*self.prefix, *args)
         return self.process.run(
-            self.budget.command(self.machine, command) if scoped else command,
+            self.owner.command(self.machine, command) if scoped else command,
             env=self.env,
             cwd="/",
             **kwargs,
@@ -262,7 +262,7 @@ class GvisorSandbox:
             raise ValueError("OCI configuration is outside the owned container state")
         effective = json.loads(config_path.read_text())
         self._verify_spec(effective, observed)
-        owner = self.budget.verify(self.machine)
+        owner = self.owner.verify(self.machine)
         for key in ("pid", "conmon_pid"):
             pid = boundary[key]
             if (
@@ -281,10 +281,15 @@ class GvisorSandbox:
             if "0" in uid.split()[1:]:
                 raise ValueError("gVisor host process has root identity")
         leaf = cgroup_path(boundary["pid"])
+        # A swap-only ceiling is enforced at the aggregate owner; the OCI
+        # memory/swap interface requires a memory limit for a leaf swap limit.
+        resources = self.machine.spec.resources
         check_limits(
             leaf,
-            self.machine.spec.resources.cpus,
-            self.machine.spec.resources.memory_mib,
+            cpus=resources.cpus,
+            memory_mib=resources.memory_mib,
+            swap_mib=resources.swap_mib if resources.memory_mib is not None else None,
+            tasks=resources.tasks,
         )
         gofers, pasta = [], []
         for file in owner.rglob("cgroup.procs"):
@@ -313,7 +318,7 @@ class GvisorSandbox:
             and not pasta
         ):
             raise ValueError(
-                "required Gofer or networking helper is absent from the machine budget"
+                "required Gofer or networking helper is absent from the machine owner"
             )
         for pid in (boundary["pid"], gofers[0]):
             verify_uid_map(Path(f"/proc/{pid}/uid_map").read_text(), context["uid_map"])

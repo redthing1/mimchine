@@ -1,12 +1,11 @@
-"""Check the inherited host budget immediately before invoking Podman."""
+"""Verify machine ownership and requested ceilings immediately before Podman."""
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
-
-HOST_TASK_LIMIT = 1024
 
 
 def cgroup_path(
@@ -23,28 +22,45 @@ def cgroup_path(
     return root / entries[0].lstrip("/")
 
 
-def check_limits(group: Path, cpus: int, memory_mib: int) -> None:
-    memory = (group / "memory.max").read_text().strip()
-    swap = (group / "memory.swap.max").read_text().strip()
-    cpu = (group / "cpu.max").read_text().split()
-    tasks = (group / "pids.max").read_text().strip()
-    if (
-        memory != str(memory_mib * 1024 * 1024)
-        or swap != "0"
-        or tasks != str(HOST_TASK_LIMIT)
+def check_limits(
+    group: Path,
+    *,
+    cpus: int | None = None,
+    memory_mib: int | None = None,
+    swap_mib: int | None = None,
+    tasks: int | None = None,
+) -> None:
+    for name, value in (
+        ("memory.max", None if memory_mib is None else memory_mib * 1024 * 1024),
+        ("memory.swap.max", None if swap_mib is None else swap_mib * 1024 * 1024),
+        ("pids.max", tasks),
     ):
-        raise ValueError(f"memory, swap or task budget is not enforced in {group}")
-    if len(cpu) != 2 or cpu[0] == "max" or int(cpu[0]) != cpus * int(cpu[1]):
-        raise ValueError(f"CPU budget is not enforced in {group}")
+        if value is not None and (group / name).read_text().strip() != str(value):
+            raise ValueError(f"{name} budget is not enforced in {group}")
+    if cpus is not None:
+        cpu = (group / "cpu.max").read_text().split()
+        if len(cpu) != 2 or cpu[0] == "max" or int(cpu[0]) != cpus * int(cpu[1]):
+            raise ValueError(f"CPU budget is not enforced in {group}")
+
+
+def identity(group: Path) -> tuple[int, int]:
+    metadata = group.stat()
+    return metadata.st_dev, metadata.st_ino
 
 
 def main() -> None:
-    unit, cpu, memory, *command = sys.argv[1:]
+    unit, device, inode, policy, *command = sys.argv[1:]
     group = cgroup_path(os.getpid())
     owners = [path for path in (group, *group.parents) if path.name == unit]
     if len(owners) != 1 or not command:
         raise ValueError("Podman invocation is outside the machine resource owner")
-    check_limits(owners[0], int(cpu), int(memory))
+    owner = owners[0]
+    expected = int(device), int(inode)
+    if identity(owner) != expected:
+        raise ValueError("machine resource owner was replaced before dispatch")
+    check_limits(owner, **json.loads(policy))
+    if identity(owner) != expected:
+        raise ValueError("machine resource owner changed during verification")
     os.execvp(command[0], command)
 
 

@@ -81,9 +81,7 @@ class _ContainerEngine:
             spec,
             prefix=self.prefix,
             identity_args=identity,
-            engine_args=("--tz=local", "--pids-limit=-1")
-            if self.name == "podman"
-            else (),
+            engine_args=("--tz=local",) if self.name == "podman" else (),
             feature_args=(*features, *job_args),
             labels=(("mimchine.id", machine.id),),
         )
@@ -123,9 +121,7 @@ class _ContainerEngine:
             prefix=(),
             identity_args=identity,
             engine_args=(
-                *gvisor_create_args(
-                    machine.spec.resources.memory_mib, machine.resource_unit
-                ),
+                *gvisor_create_args(machine.resource_unit),
                 *((PASTA_NETWORK,) if spec.network is NetworkMode.DEFAULT else ()),
                 *(("--tz=local",) if not probe else ()),
             ),
@@ -214,7 +210,7 @@ class _ContainerEngine:
 
     def release(self, machine: Machine) -> None:
         if machine.gvisor:
-            GvisorSandbox(self.process, machine).budget.remove(machine)
+            GvisorSandbox(self.process, machine).owner.remove(machine)
 
     def _gvisor_cleanup(
         self, machine: Machine, action: Literal["stop", "rm"], *, probe: bool = False
@@ -254,7 +250,7 @@ class _ContainerEngine:
             completed = True
         finally:
             if not probe or not completed:
-                sandbox.budget.remove(machine)
+                sandbox.owner.remove(machine)
 
     def context(self) -> EngineContext:
         raise NotImplementedError
