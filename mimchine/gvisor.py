@@ -44,7 +44,7 @@ class GvisorRuntimeIdentity:
 def find_runtime(
     configured: Path | None, *, directory: Path = INSTALL_DIRECTORY
 ) -> Path:
-    """Select the newest installed release for a new machine, or an explicit path.
+    """Select the installed package for a new machine, or an explicit path.
 
     Existing bindings use their canonical reference, never discovery. A broken
     selected release must fail verification rather than silently fall back.
@@ -53,6 +53,13 @@ def find_runtime(
         return configured
     candidates = []
     try:
+        # Prefer the package's stable location over older coinstalled releases.
+        # A partial or broken package must fail verification, not fall back.
+        if any(
+            path.exists() or path.is_symlink()
+            for path in (directory / "runsc", directory / "manifest.json", directory / "profiles")
+        ):
+            return directory / "runsc"
         if directory.is_dir():
             for entry in directory.iterdir():
                 match = RELEASE_DIRECTORY.fullmatch(entry.name)

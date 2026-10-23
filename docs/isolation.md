@@ -16,17 +16,18 @@ is selected when creating a machine.
 
 ## Install the runtime
 
-Install a versioned [Mim gVisor distribution](https://github.com/redthing1/gvisor/releases),
+Install a [Mim gVisor distribution](https://github.com/redthing1/gvisor/releases),
 including its sidecars, manifest, and fixed runtime profiles. The repository's
 `mim/build packages` produces RPM and Debian packages using a containerized
 build. Mim does not install runtimes or change host container configuration.
 
-New machines select the newest release under `/usr/lib/mim-gvisor`. A custom
+New machines use `/usr/lib/mim-gvisor/runsc`. Legacy versioned installations
+remain discoverable when the stable package is absent. A custom
 installation can be selected in `~/.config/mimchine/config.toml`:
 
 ```toml
 [runtimes.gvisor]
-path = "/opt/mim-gvisor/20261012.0-mim.4/runsc"
+path = "/opt/mim-gvisor/runsc"
 
 [profiles.isolated]
 image = "app:dev"
@@ -39,9 +40,11 @@ job_limits = false
 mim create dev -P isolated
 ```
 
-The path must be absolute. Each machine retains its canonical runtime version
-and image ID. Installing a newer release changes selection for new machines;
-keep older distributions installed while machines reference them.
+The path must be absolute. Each machine binds its runtime manifest and image ID;
+replacing a bound distribution is rejected. Retire affected Mim machines before
+upgrading the package in place, or configure a retained archive installation for
+machines that must outlive package upgrades. This binding is separate from
+ordinary Compose services, which adopt package updates when recreated.
 
 The host needs delegated cgroup v2, a working user systemd manager, `busctl`,
 `systemd-run` (254+), and pasta supporting `--no-splice`. Configured resource

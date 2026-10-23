@@ -147,6 +147,23 @@ def test_explicit_runtime_does_not_require_or_search_default_installation(tmp_pa
     assert find_runtime(configured, directory=tmp_path / "missing") == configured
 
 
+def test_stable_package_takes_precedence_over_legacy_releases(distribution):
+    (distribution / "20261012.0-mim.99").mkdir()
+    selected = find_runtime(None, directory=distribution)
+    assert selected == distribution / "runsc"
+    assert verify_runtime(selected, "offline").distribution == distribution
+
+
+@pytest.mark.parametrize("missing", ["runsc", "manifest.json"])
+def test_broken_stable_package_does_not_fall_back(distribution, missing):
+    (distribution / "20261012.0-mim.99").mkdir()
+    (distribution / missing).unlink()
+    selected = find_runtime(None, directory=distribution)
+    assert selected == distribution / "runsc"
+    with pytest.raises(ValueError, match="cannot verify"):
+        verify_runtime(selected, "offline")
+
+
 def test_missing_installation_has_an_actionable_error(tmp_path):
     with pytest.raises(ValueError, match="install a runtime package"):
         find_runtime(None, directory=tmp_path / "missing")
