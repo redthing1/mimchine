@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Protocol
+from pathlib import Path
 
 from ..domain import (
     ContainerAllocation,
@@ -10,6 +11,7 @@ from ..domain import (
     Machine,
     MachineObservation,
     MissingContainer,
+    RootfsImage,
 )
 from ..process import ProcessRunner
 
@@ -30,6 +32,13 @@ class Engine(Protocol):
     def delete_identity_probe(self, machine: Machine) -> None: ...
     def check(self, machine: Machine) -> MachineObservation: ...
     def release(self, machine: Machine) -> None: ...
+    def prepare_replacement(self, machine: Machine) -> None: ...
+    def preserve_rootfs(
+        self, machine: Machine, token: str, directory: Path
+    ) -> RootfsImage: ...
+    def verify_replacement(self, machine: Machine) -> None: ...
+    def remove_rootfs(self, machine: Machine, *, token: str | None = None) -> None: ...
+    def update_resources(self, before: Machine, after: Machine) -> None: ...
 
 
 def get_engine(name: str, process: ProcessRunner | None = None) -> Engine:

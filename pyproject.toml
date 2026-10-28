@@ -28,7 +28,10 @@ packages = ["mimchine"]
 "mimchine/scripts/mim-limit.sh" = "mimchine/scripts/mim-limit.sh"
 
 [tool.pytest.ini_options]
-markers = ["live_gvisor: explicitly enabled, bounded rootless gVisor integration"]
+markers = [
+    "live_gvisor: explicitly enabled, bounded rootless gVisor integration",
+    "live_updates: explicitly enabled synthetic Podman/Docker update integration",
+]
 
 [dependency-groups]
 build = [

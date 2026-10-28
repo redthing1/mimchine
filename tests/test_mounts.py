@@ -149,3 +149,17 @@ def test_map_host_path_to_guest_uses_most_specific_mount(tmp_path: Path) -> None
     )
 
     assert map_host_path_to_guest(file_path, mounts) == "/src/main.py"
+
+
+def test_cwd_mapping_does_not_enter_a_path_hidden_by_another_mount(tmp_path):
+    from mimchine.domain import MountSpec
+
+    source = tmp_path / "project"
+    source.mkdir()
+    (source / "vendor").mkdir()
+    replacement = tmp_path / "other"
+    replacement.mkdir()
+    mounts = (MountSpec(source, "/work"), MountSpec(replacement, "/work/vendor"))
+    assert map_host_path_to_guest(source / "vendor", mounts) is None
+    assert map_host_path_to_guest(replacement, mounts) == "/work/vendor"
+    assert map_host_path_to_guest(source, mounts) == "/work"

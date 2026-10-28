@@ -89,25 +89,32 @@ def map_host_path_to_guest(
     host_path: Path, mounts: tuple[MountSpec, ...]
 ) -> str | None:
     resolved_host_path = Path(os.path.expanduser(str(host_path))).resolve()
-    best: MountSpec | None = None
-
-    for mount in mounts:
+    for mount in sorted(mounts, key=lambda m: len(str(m.source)), reverse=True):
         try:
             common = os.path.commonpath([resolved_host_path, mount.source])
         except ValueError:
             continue
         if Path(common) != mount.source:
             continue
-        if best is None or len(str(mount.source)) > len(str(best.source)):
-            best = mount
-
-    if best is None:
-        return None
-
-    rel = os.path.relpath(resolved_host_path, best.source)
-    if rel == ".":
-        return best.target
-    return posixpath.join(best.target, rel.replace(os.sep, "/"))
+        rel = os.path.relpath(resolved_host_path, mount.source)
+        guest = (
+            mount.target
+            if rel == "."
+            else posixpath.join(mount.target, rel.replace(os.sep, "/"))
+        )
+        effective = max(
+            (
+                m
+                for m in mounts
+                if guest == m.target or guest.startswith(m.target.rstrip("/") + "/")
+            ),
+            key=lambda m: len(m.target),
+        )
+        suffix = posixpath.relpath(guest, effective.target)
+        actual = effective.source if suffix == "." else effective.source / suffix
+        if actual == resolved_host_path:
+            return guest
+    return None
 
 
 def _parse_parts(
@@ -166,9 +173,9 @@ def _parse_home_share_parts(value: str) -> tuple[Path, bool, tuple[str, ...]]:
 
 
 def _validate_target(value: str) -> str:
-    if not value.startswith("/"):
+    if not value.startswith("/") or ".." in value.split("/"):
         raise ValueError(f"mount target must be absolute: {value}")
-    return value
+    return "/" + posixpath.normpath(value).lstrip("/")
 
 
 def _looks_like_mode_options(value: str) -> bool:

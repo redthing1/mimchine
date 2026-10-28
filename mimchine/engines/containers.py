@@ -29,6 +29,7 @@ from ..process import ProcessError, ProcessRunner
 from .commands import create_command, validate_container_args
 from .gvisor import GvisorSandbox
 from .lifecycle import IDENTITY_PROBE_ARGV, KEEPALIVE_ARGV
+from .updates import UpdateEngineMixin
 
 NEUTRAL_BACKEND_CWD = "/"
 
@@ -39,7 +40,7 @@ class ImageIdentity:
     gid: int
 
 
-class _ContainerEngine:
+class _ContainerEngine(UpdateEngineMixin):
     name: str
     binary: str
 
@@ -64,7 +65,11 @@ class _ContainerEngine:
         return _object(json.loads(result.stdout), f"{self.name} info response")
 
     def allocate(self, machine: Machine) -> ContainerAllocation:
-        spec = machine.spec
+        spec = replace(
+            machine.spec,
+            name=machine.backend_name,
+            image=machine.rootfs.image_id if machine.rootfs else machine.spec.image,
+        )
         validate_container_args(spec.container_args)
         context = self.context()
         if machine.creation_context is not None and machine.creation_context != context:
@@ -72,7 +77,11 @@ class _ContainerEngine:
         if machine.gvisor:
             return self._allocate_gvisor(machine, context)
         job_args = self._job_limits_args(spec) if spec.job_limits else ()
-        identity = tuple(self._identity_args(spec))
+        identity = (
+            machine.rootfs.identity_args
+            if machine.rootfs
+            else tuple(self._identity_args(spec))
+        )
         features = tuple(self._ssh_agent_args()) if spec.ssh_agent else ()
         if spec.gpu:
             features += tuple(self._gpu_args())
@@ -81,9 +90,12 @@ class _ContainerEngine:
             spec,
             prefix=self.prefix,
             identity_args=identity,
-            engine_args=("--tz=local",) if self.name == "podman" else (),
+            engine_args=(
+                *(("--tz=local",) if self.name == "podman" else ()),
+                *(("--runtime", machine.rootfs.runtime) if machine.rootfs else ()),
+            ),
             feature_args=(*features, *job_args),
-            labels=(("mimchine.id", machine.id),),
+            labels=tuple((k, v) for k, v in labels if k != "mimchine"),
         )
         result = self.process.run(command, capture=True, cwd=NEUTRAL_BACKEND_CWD)
         return ContainerAllocation(result.stdout.strip(), context, labels)
@@ -316,6 +328,13 @@ class _ContainerEngine:
             "cpu_period": host_config.get("CpuPeriod"),
             "nano_cpus": host_config.get("NanoCpus"),
             "user": config.get("User"),
+            "env": config.get("Env"),
+            "workdir": config.get("WorkingDir"),
+            "userns": host_config.get("UsernsMode"),
+            "id_mappings": host_config.get("IDMappings"),
+            "memory_swap": host_config.get("MemorySwap"),
+            "pids_limit": host_config.get("PidsLimit"),
+            "started_at": state.get("StartedAt"),
             "boundary": {
                 "pid": state.get("Pid"),
                 "conmon_pid": state.get("ConmonPid"),

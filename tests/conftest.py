@@ -14,6 +14,11 @@ def no_live_container_engine(monkeypatch, request):
         and os.environ.get("MIM_GVISOR_LIVE") == "1"
     ):
         return
+    if (
+        request.node.get_closest_marker("live_updates")
+        and os.environ.get("MIM_UPDATE_LIVE") == "1"
+    ):
+        return
     run = ProcessRunner.run
     forbidden = {
         "podman",

@@ -6,13 +6,10 @@ adds gVisor's userspace kernel through local rootless Podman.
 ```sh
 mim create dev --image app:dev --isolation gvisor --workspace .
 mim enter dev
-mim exec dev make
-mim stop dev
-mim start dev
 ```
 
-Existing machines retain their isolation mode. Build images as usual; isolation
-is selected when creating a machine.
+Build images as usual and choose isolation when creating a machine. Its isolation
+mode stays fixed for its lifetime.
 
 ## Install the runtime
 
@@ -21,9 +18,8 @@ including its sidecars, manifest, and fixed runtime profiles. The repository's
 `mim/build packages` produces RPM and Debian packages using a containerized
 build. Mim does not install runtimes or change host container configuration.
 
-New machines use `/usr/lib/mim-gvisor/runsc`. Legacy versioned installations
-remain discoverable when the stable package is absent. A custom
-installation can be selected in `~/.config/mimchine/config.toml`:
+Mim uses `/usr/lib/mim-gvisor/runsc` by default. Select a custom installation in
+`~/.config/mimchine/config.toml`:
 
 ```toml
 [runtimes.gvisor]
@@ -32,46 +28,39 @@ path = "/opt/mim-gvisor/runsc"
 [profiles.isolated]
 image = "app:dev"
 isolation = "gvisor"
-gpu = false
-job_limits = false
 ```
 
 ```sh
 mim create dev -P isolated
 ```
 
-The path must be absolute. Each machine binds its runtime manifest and image ID;
-replacing a bound distribution is rejected. Retire affected Mim machines before
-upgrading the package in place, or configure a retained archive installation for
-machines that must outlive package upgrades. This binding is separate from
-ordinary Compose services, which adopt package updates when recreated.
+The path must be absolute. A machine keeps the image and runtime it was created
+with; Mim refuses execution if its runtime files change. Keep a separate runtime
+installation for machines that must survive package upgrades. Otherwise, delete
+affected machines before upgrading the runtime in place.
 
 The host needs delegated cgroup v2, a working user systemd manager, `busctl`,
 `systemd-run` (254+), and pasta supporting `--no-splice`. Configured resource
 ceilings require their corresponding host controllers.
 Use `mim doctor --isolation gvisor` to check local prerequisites; delegation and
 effective isolation are verified when creating a machine.
-The integration has been exercised with Podman 5.8.4 and Mim gVisor
-20261012.0-mim.4 on x86-64 Linux.
 
 ## Resources and access
 
-Resource ceilings are opt-in and independent of isolation. Use `--cpus`,
-`--memory`, `--swap`, and `--tasks`, or the corresponding profile/default settings.
-Unset ceilings inherit host policy; `--swap 0` disables swap. GVisor ceilings
-cover the sandbox, filesystem server, network helper, and concurrent exec
-sessions. The task ceiling counts host processes and threads, rather than guest
-processes.
+[Resource ceilings](machines.md#resources-and-gpus) cover the sandbox, filesystem
+server, network helper and concurrent exec sessions. The task ceiling counts
+host processes and threads, rather than guest processes.
 
-Mim verifies machine process ownership and every requested ceiling before
-starting image code and dispatching commands. Stop and delete quiesce the
-machine's owned host processes even when no ceilings are configured.
+Before running image code or commands, Mim checks process ownership and verifies
+that resource ceilings are applied. Stopping or deleting a machine also stops
+its helper processes, even when no ceilings are configured.
 
 Writable rootfs changes, workspaces, shell history, stop/start, and interactive
 shells retain the normal Mim workflow. Host-edited workspace files remain
 visible; filesystem watchers may need polling. GPU forwarding, host networking,
 raw container arguments, and per-command cgroup memory limits are excluded.
-Guest setuid elevation is disabled.
+Guest setuid elevation is disabled. [Updates](updates.md) support shell
+preferences only for gVisor machines.
 
 Published ports default to `127.0.0.1`. Explicit IPv4/IPv6 addresses and TCP/UDP
 are accepted through `--port`. Publishing requires networking; `--no-net`

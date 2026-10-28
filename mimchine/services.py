@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import stat
 import sys
 from dataclasses import dataclass, replace
@@ -29,6 +30,8 @@ from .domain import (
     PortBind,
     ResourceSpec,
     RuntimeState,
+    UpdateJournal,
+    UpdateOptions,
     verify_observation,
 )
 from .engines import Engine, get_engine
@@ -46,6 +49,13 @@ from .profiles import Profile, load_profile
 from .shell_state import ShellStateManager
 from .shells import enter_shell_command, normalize_shell
 from .state import MachineStore
+from .updates import (
+    UpdatePlan,
+    explicit_port,
+    plan_update,
+    port_key,
+    validate_mounts_ports,
+)
 
 T = TypeVar("T")
 
@@ -248,6 +258,8 @@ class MachineService:
                 raise ValueError(
                     f"machine [{name}] has an incomplete deletion; retry mim delete"
                 )
+            if machine.update is not None:
+                return self._continue_update(machine, engine, recovering=True)
             if machine.operation is Operation.READY:
                 if self._observe(machine, engine) is None:
                     raise ValueError(
@@ -309,6 +321,208 @@ class MachineService:
     def plan(self, options: CreateOptions) -> MachinePlan:
         return self._plan(self._resolve(options))
 
+    def plan_update(self, name: str, options: UpdateOptions) -> UpdatePlan:
+        return self._update_plan(self.store.load(name), options)
+
+    def _update_plan(self, machine: Machine, options: UpdateOptions) -> UpdatePlan:
+        if machine.operation is not Operation.READY:
+            raise ValueError(f"machine [{machine.name}] needs recovery before updating")
+        plan = plan_update(machine.spec, options)
+        self._plan(plan.after)
+        if machine.gvisor and plan.effect not in {"none", "metadata"}:
+            raise ValueError("gVisor machines support only shell-preference updates")
+        if plan.effect == "replace":
+            if (
+                machine.spec.container_args
+                or machine.spec.gpu
+                or machine.spec.job_limits
+            ):
+                raise ValueError(
+                    "replacement does not support raw container arguments, GPU or job limits"
+                )
+            if machine.spec.ssh_agent:
+                raise ValueError("replacement does not support SSH-agent forwarding")
+            if any(p.address is None for p in plan.after.ports):
+                raise ValueError(
+                    "replace legacy port rules with explicit addresses before updating"
+                )
+        return plan
+
+    def update(
+        self, name: str, options: UpdateOptions, *, restart: bool = False
+    ) -> UpdatePlan:
+        with self.store.lock(name):
+            machine = self.store.load(name)
+            plan = self._update_plan(machine, options)
+            if plan.effect == "none":
+                return plan
+            if plan.effect == "metadata":
+                self.store.save(replace(machine, spec=plan.after))
+                return plan
+            engine = self._engine(machine.spec.engine)
+            observed = self._observe(machine, engine)
+            if observed is None or observed.state not in {
+                RuntimeState.RUNNING,
+                RuntimeState.STOPPED,
+            }:
+                raise ValueError("update requires a bound running or stopped container")
+            running = observed.state is RuntimeState.RUNNING
+            if plan.effect == "replace":
+                if running and not restart:
+                    raise ValueError(
+                        "this update replaces the container and interrupts sessions; use --restart or stop the machine first"
+                    )
+                engine.prepare_replacement(machine)
+            journal = UpdateJournal(
+                machine, plan.after, str(uuid4()), running, plan.effect
+            )
+            machine = replace(
+                machine, operation=Operation.UPDATING, update=journal, error=None
+            )
+            self.store.save(machine)
+            self._continue_update(machine, engine)
+            return plan
+
+    def _continue_update(
+        self, machine: Machine, engine: Engine, *, recovering: bool = False
+    ) -> Machine:
+        try:
+            journal = machine.update
+            before = journal.before
+            if journal.effect == "resources":
+                after = replace(before, spec=journal.desired)
+                engine.update_resources(before, after)
+                self.store.save(after)
+                return after
+            if recovering and journal.stage == "committed" and journal.running:
+                observed = self._observe(journal.candidate, engine)
+                if observed is not None and _never_started(observed):
+                    # Failed Docker network activation can leave a container
+                    # that starts on retry without its port forwarding. Only a
+                    # candidate proven never to have run may be reallocated.
+                    journal = replace(journal, stage="retrying")
+                    machine = replace(
+                        before, operation=Operation.UPDATING, update=journal
+                    )
+                    self.store.save(machine)
+            if journal.stage == "retrying":
+                candidate = journal.candidate
+                observed = self._observe(candidate, engine)
+                if observed is not None:
+                    if not _never_started(observed):
+                        raise ValueError(
+                            "replacement has run; refusing to discard its filesystem"
+                        )
+                    engine.delete(candidate)
+                    if self._observe(candidate, engine) is not None:
+                        raise ValueError("failed candidate removal was not confirmed")
+                candidate = replace(
+                    candidate,
+                    operation=Operation.CREATING,
+                    binding=None,
+                    creation_context=before.target.context,
+                )
+                journal = replace(journal, stage="snapshot", candidate=candidate)
+                machine = replace(machine, update=journal)
+                self.store.save(machine)
+            if journal.stage == "prepared":
+                observed = self._observe(before, engine)
+                if observed is None:
+                    raise ValueError(
+                        "original container disappeared before preservation"
+                    )
+                if observed.state is RuntimeState.RUNNING:
+                    engine.stop(before)
+                elif observed.state is not RuntimeState.STOPPED:
+                    raise ValueError("original container state is unknown")
+                observed = self._observe(before, engine)
+                if observed is None or observed.state is not RuntimeState.STOPPED:
+                    raise ValueError("original container did not stop")
+                journal = replace(journal, stage="stopped")
+                machine = replace(machine, update=journal)
+                self.store.save(machine)
+            if journal.stage == "stopped":
+                rootfs = engine.preserve_rootfs(
+                    before, journal.token, self.store.machine_dir(machine.name)
+                )
+                candidate = Machine(
+                    before.id,
+                    journal.desired,
+                    before.created_at,
+                    creation_context=before.target.context,
+                    generation=journal.token,
+                    rootfs=rootfs,
+                )
+                journal = replace(journal, stage="snapshot", candidate=candidate)
+                machine = replace(machine, update=journal)
+                self.store.save(machine)
+            if journal.stage == "snapshot":
+                candidate = journal.candidate
+                # Only this journal's reserved unique name may recover a lost
+                # allocation reply. All later operations use its exact ID.
+                observed = engine.observe(candidate.backend_name)
+                if observed.context != candidate.creation_context:
+                    raise ValueError("engine context changed during replacement")
+                if isinstance(observed, MissingContainer):
+                    allocation = engine.allocate(candidate)
+                else:
+                    allocation = ContainerAllocation(
+                        observed.container_id, observed.context, candidate.labels
+                    )
+                    observed.verify(allocation)
+                candidate = replace(candidate, allocation=allocation)
+                journal = replace(journal, stage="allocated", candidate=candidate)
+                machine = replace(machine, update=journal)
+                self.store.save(machine)
+            if journal.stage == "allocated":
+                candidate = journal.candidate
+                observed = self._observe(candidate, engine)
+                if observed is None:
+                    raise ValueError("replacement allocation disappeared")
+                if (
+                    observed.image_id.removeprefix("sha256:")
+                    != candidate.rootfs.image_id.removeprefix("sha256:")
+                    or observed.runtime != before.binding.runtime
+                ):
+                    raise ValueError(
+                        "replacement image or runtime differs from the preserved binding"
+                    )
+                candidate = replace(
+                    candidate,
+                    operation=Operation.READY,
+                    allocation=None,
+                    creation_context=None,
+                    binding=MachineBinding(
+                        candidate.target, observed.image_id, observed.runtime
+                    ),
+                )
+                engine.verify_replacement(candidate)
+                journal = replace(journal, stage="committed", candidate=candidate)
+                machine = replace(
+                    candidate, operation=Operation.UPDATING, update=journal
+                )
+                self.store.save(machine)
+            candidate = journal.candidate
+            if journal.running:
+                self._ensure_running(candidate, engine)
+            observed = self._observe(before, engine, strict=False)
+            if observed is not None:
+                if observed.state is not RuntimeState.STOPPED:
+                    raise ValueError(
+                        "old allocation unexpectedly running; cleanup refused"
+                    )
+                engine.delete(before)
+                if self._observe(before, engine, strict=False) is not None:
+                    raise ValueError("old allocation removal was not confirmed")
+            engine.remove_rootfs(before)
+            self.store.save(candidate)
+            return candidate
+        except Exception as exc:
+            # Reload the durable journal: never overwrite a later stage with
+            # the caller's older in-memory record after a save failure.
+            self._remember_error(self.store.load(machine.name), exc)
+            raise
+
     def _plan(self, spec: MachineSpec) -> MachinePlan:
         _validate_create(spec)
         return plan_machine(
@@ -331,6 +545,10 @@ class MachineService:
     def stop(self, name: str) -> RuntimeState:
         with self.store.lock(name):
             machine = self.store.load(name)
+            if machine.update:
+                raise ValueError(
+                    "machine has an interrupted update; run mim recover first"
+                )
             engine = self._engine(machine.spec.engine)
             if machine.gvisor:
                 engine.stop(machine)
@@ -347,6 +565,9 @@ class MachineService:
         with self.store.lock(name):
             machine = self.store.load(name)
             engine = self._engine(machine.spec.engine)
+            if machine.update:
+                self._delete_update(machine, engine, keep_shell_state=keep_shell_state)
+                return
             machine = self._recover_identity_probe(machine, engine)
             if machine.target is None:
                 machine = self._recover_allocation(machine, engine)
@@ -369,12 +590,64 @@ class MachineService:
                     self.store.save(machine)
                 if machine.gvisor:
                     engine.release(machine)
+                if machine.rootfs:
+                    engine.remove_rootfs(machine)
                 if not keep_shell_state:
                     self.shell_state.delete(name)
                 self.store.delete(name)
             except Exception as exc:
                 self._remember_error(machine, exc)
                 raise
+
+    def _delete_update(
+        self, machine: Machine, engine: Engine, *, keep_shell_state: bool
+    ) -> None:
+        # Persist deletion intent before removing anything. Recovery must never
+        # resume an update whose source or candidate is being deleted.
+        machine = replace(machine, operation=Operation.DELETING, error=None)
+        self.store.save(machine)
+        try:
+            journal = machine.update
+            candidate = journal.candidate
+            if candidate and candidate.target is None:
+                observed = engine.observe(candidate.backend_name)
+                if observed.context != candidate.creation_context:
+                    raise ValueError(
+                        "engine context changed during replacement cleanup"
+                    )
+                if not isinstance(observed, MissingContainer):
+                    allocation = ContainerAllocation(
+                        observed.container_id, observed.context, candidate.labels
+                    )
+                    observed.verify(allocation)
+                    candidate = replace(candidate, allocation=allocation)
+                    journal = replace(journal, candidate=candidate)
+                    machine = replace(machine, update=journal)
+                    self.store.save(machine)
+            for record in (candidate, journal.before):
+                if (
+                    record
+                    and record.target
+                    and self._observe(record, engine, strict=False)
+                ):
+                    engine.delete(record)
+                    if self._observe(record, engine, strict=False) is not None:
+                        raise ValueError(
+                            "container removal was not confirmed; binding retained"
+                        )
+            if journal.effect == "replace":
+                # Import may have succeeded before its reply or journal save.
+                if candidate:
+                    engine.remove_rootfs(candidate)
+                else:
+                    engine.remove_rootfs(journal.before, token=journal.token)
+            engine.remove_rootfs(journal.before)
+            if not keep_shell_state:
+                self.shell_state.delete(machine.name)
+            self.store.delete(machine.name)
+        except Exception as exc:
+            self._remember_error(self.store.load(machine.name), exc)
+            raise
 
     def _execution_machine(
         self, name: str, *, memory_mib: int | None = None
@@ -589,6 +862,7 @@ class MachineService:
 
 
 def _validate_create(spec: MachineSpec) -> None:
+    validate_mounts_ports(spec)
     if spec.job_limits and spec.engine != "podman":
         raise ValueError(
             "job limits require Podman on native Linux with cgroup v2 and crun"
@@ -608,24 +882,50 @@ def _session_env(spec: MachineSpec) -> tuple[str, ...]:
 
 
 def _mounts(options: CreateOptions, profile: Profile) -> tuple[MountSpec, ...]:
-    workspace_specs = profile.workspaces + options.workspaces
-    home_share_specs = profile.home_shares + options.home_shares
-    mount_specs = profile.mounts + options.mounts
-    mounts: list[MountSpec] = []
-    mounts.extend(parse_workspace_spec(value) for value in workspace_specs)
-    for value in home_share_specs:
-        mounts.extend(parse_home_share_spec(value))
-    mounts.extend(parse_mount_spec(value) for value in mount_specs)
-    return tuple(mounts)
+    resolved = {}
+    for layer in (profile, options):
+        mounts = [parse_workspace_spec(v) for v in layer.workspaces]
+        for value in layer.home_shares:
+            mounts.extend(parse_home_share_spec(value))
+        mounts.extend(parse_mount_spec(v) for v in layer.mounts)
+        seen = set()
+        for mount in mounts:
+            if mount.target in seen:
+                raise ValueError(f"duplicate mount destination: {mount.target}")
+            seen.add(mount.target)
+            if mount.target in resolved and resolved[mount.target].kind == "workspace":
+                if not mount.source.is_dir():
+                    raise ValueError("workspace source must be a directory")
+                mount = replace(mount, kind="workspace")
+            resolved[mount.target] = mount
+    return tuple(resolved.values())
 
 
 def _ports(options: CreateOptions, profile: Profile) -> tuple[PortBind, ...]:
-    values = profile.ports + options.ports
-    return tuple(PortBind.parse(value) for value in values)
+    ports = {}
+    for values in (profile.ports, options.ports):
+        seen = set()
+        for value in values:
+            port = explicit_port(value)
+            key = port_key(port)
+            if key in seen:
+                raise ValueError("duplicate published host listener")
+            seen.add(key)
+            ports[key] = port
+    return tuple(ports.values())
 
 
 def _env(options: CreateOptions, profile: Profile) -> tuple[str, ...]:
-    return profile.env + options.env
+    env = {}
+    for values in (profile.env, options.env):
+        seen = set()
+        for value in values:
+            key = value.partition("=")[0]
+            if key in seen:
+                raise ValueError(f"duplicate environment override: {key}")
+            seen.add(key)
+            env[key] = value
+    return tuple(env.values())
 
 
 def _container_args(options: CreateOptions, profile: Profile) -> tuple[str, ...]:
@@ -684,3 +984,12 @@ def _session_workdir(spec: MachineSpec) -> str | None:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _never_started(observed: MachineObservation) -> bool:
+    started = json.loads(observed.configuration).get("started_at")
+    return (
+        observed.state is RuntimeState.STOPPED
+        and isinstance(started, str)
+        and started.startswith("0001-01-01T")
+    )

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 MACHINE_NAME_PATTERN = re.compile(
     r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?"
     r"(?:\.[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)*"
@@ -321,6 +321,7 @@ class Operation(Enum):
     CREATING = "creating"
     READY = "ready"
     DELETING = "deleting"
+    UPDATING = "updating"
 
 
 @dataclass(frozen=True)
@@ -561,6 +562,42 @@ def verify_observation(
 
 
 @dataclass(frozen=True)
+class RootfsImage:
+    image_id: str
+    token: str
+    runtime: str
+    identity_args: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"(?:sha256:)?[a-f0-9]{64}", self.image_id) is None:
+            raise ValueError("rootfs image requires an immutable ID")
+        if str(UUID(self.token)) != self.token:
+            raise ValueError("invalid rootfs ownership token")
+        _require_text(self.runtime, "rootfs runtime")
+
+    @property
+    def tag(self) -> str:
+        return f"localhost/mim-rootfs:{UUID(self.token).hex}"
+
+    def to_data(self) -> dict[str, Any]:
+        return dict(
+            image_id=self.image_id,
+            token=self.token,
+            runtime=self.runtime,
+            identity_args=list(self.identity_args),
+        )
+
+    @classmethod
+    def from_data(cls, data: dict[str, Any]) -> "RootfsImage":
+        return cls(
+            data["image_id"],
+            data["token"],
+            data["runtime"],
+            tuple(data.get("identity_args", [])),
+        )
+
+
+@dataclass(frozen=True)
 class Machine:
     id: str
     spec: MachineSpec
@@ -572,6 +609,9 @@ class Machine:
     creation_context: EngineContext | None = None
     gvisor: GvisorBinding | None = None
     identity_probe: ContainerAllocation | None = None
+    generation: str | None = None
+    rootfs: RootfsImage | None = None
+    update: UpdateJournal | None = None
 
     def __post_init__(self) -> None:
         _require_text(self.id, "machine ID")
@@ -581,6 +621,29 @@ class Machine:
             self, "created_at", _require_text(self.created_at, "created at")
         )
         object.__setattr__(self, "operation", Operation(self.operation))
+        if (
+            self.generation is not None
+            and str(UUID(self.generation)) != self.generation
+        ):
+            raise ValueError("invalid allocation generation")
+        if (self.operation is Operation.UPDATING and self.update is None) or (
+            self.update is not None
+            and self.operation not in {Operation.UPDATING, Operation.DELETING}
+        ):
+            raise ValueError("updating machine requires an update journal")
+        if self.rootfs is not None and self.rootfs.token != self.generation:
+            raise ValueError("rootfs ownership differs from allocation generation")
+        if self.update:
+            active = (
+                self.update.candidate
+                if self.update.stage == "committed"
+                else self.update.before
+            )
+            if any(
+                getattr(self, key) != getattr(active, key)
+                for key in ("id", "spec", "binding", "gvisor", "generation", "rootfs")
+            ):
+                raise ValueError("active binding differs from update journal")
         if self.binding is not None and self.allocation is not None:
             raise ValueError(
                 "machine cannot have both a pending allocation and a binding"
@@ -600,6 +663,25 @@ class Machine:
             raise ValueError("creation context engine does not match machine intent")
         if self.target is not None and self.target.context.engine != self.spec.engine:
             raise ValueError("binding engine does not match machine intent")
+        if (
+            self.generation
+            and self.target
+            and (
+                dict(self.target.labels).get("mimchine.generation") != self.generation
+                or dict(self.target.labels).get("mimchine.id") != self.id
+            )
+        ):
+            raise ValueError("allocation generation ownership differs")
+        if (
+            self.rootfs
+            and self.binding
+            and (
+                self.binding.image_id.removeprefix("sha256:")
+                != self.rootfs.image_id.removeprefix("sha256:")
+                or self.binding.runtime != self.rootfs.runtime
+            )
+        ):
+            raise ValueError("rootfs image or runtime differs from binding")
         if self.allocation is not None:
             if self.creation_context != self.allocation.context:
                 raise ValueError(
@@ -662,7 +744,13 @@ class Machine:
     @property
     def labels(self) -> tuple[tuple[str, str], ...]:
         labels = (("mimchine", "1"), ("mimchine.id", self.id))
+        if self.generation:
+            labels += (("mimchine.generation", self.generation),)
         return (*labels, ("mimchine.role", "machine")) if self.gvisor else labels
+
+    @property
+    def backend_name(self) -> str:
+        return f"mim-{UUID(self.generation).hex}" if self.generation else self.name
 
     @property
     def probe_labels(self) -> tuple[tuple[str, str], ...]:
@@ -699,6 +787,9 @@ class Machine:
             "identity_probe": None
             if self.identity_probe is None
             else self.identity_probe.to_data(),
+            "generation": self.generation,
+            "rootfs": None if self.rootfs is None else self.rootfs.to_data(),
+            "update": None if self.update is None else self.update.to_data(),
         }
 
     @classmethod
@@ -727,7 +818,104 @@ class Machine:
             identity_probe=None
             if data.get("identity_probe") is None
             else ContainerAllocation.from_data(data["identity_probe"]),
+            generation=data.get("generation"),
+            rootfs=None
+            if data.get("rootfs") is None
+            else RootfsImage.from_data(data["rootfs"]),
+            update=None
+            if data.get("update") is None
+            else UpdateJournal.from_data(data["update"]),
         )
+
+
+@dataclass(frozen=True)
+class UpdateJournal:
+    before: Machine
+    desired: MachineSpec
+    token: str
+    running: bool
+    effect: str
+    stage: str = "prepared"
+    candidate: Machine | None = None
+
+    def __post_init__(self) -> None:
+        if str(UUID(self.token)) != self.token:
+            raise ValueError("invalid update token")
+        if self.before.update or (self.candidate and self.candidate.update):
+            raise ValueError("nested update journal")
+        if (
+            self.before.operation is not Operation.READY
+            or self.before.gvisor is not None
+            or type(self.running) is not bool
+        ):
+            raise ValueError("invalid update source or running intent")
+        if (
+            self.desired.name != self.before.name
+            or self.desired.engine != self.before.spec.engine
+        ):
+            raise ValueError("update cannot change machine identity or engine")
+        if self.effect not in {"replace", "resources"} or self.stage not in {
+            "prepared",
+            "stopped",
+            "snapshot",
+            "allocated",
+            "committed",
+            "retrying",
+        }:
+            raise ValueError("invalid update stage")
+        if self.candidate and (
+            self.candidate.id != self.before.id
+            or self.candidate.generation != self.token
+            or self.candidate.spec != self.desired
+        ):
+            raise ValueError("update candidate ownership differs")
+        needs_candidate = self.stage in {
+            "snapshot",
+            "allocated",
+            "committed",
+            "retrying",
+        }
+        if needs_candidate != (self.candidate is not None):
+            raise ValueError("update stage requires its candidate allocation")
+        if self.effect == "resources" and self.stage != "prepared":
+            raise ValueError("resource update cannot replace an allocation")
+
+    def to_data(self) -> dict[str, Any]:
+        return dict(
+            before=self.before.to_data(),
+            desired=self.desired.to_data(),
+            token=self.token,
+            running=self.running,
+            effect=self.effect,
+            stage=self.stage,
+            candidate=None if self.candidate is None else self.candidate.to_data(),
+        )
+
+    @classmethod
+    def from_data(cls, data: dict[str, Any]) -> "UpdateJournal":
+        return cls(
+            Machine.from_data(data["before"]),
+            MachineSpec.from_data(data["desired"]),
+            data["token"],
+            data["running"],
+            data["effect"],
+            data["stage"],
+            None if data["candidate"] is None else Machine.from_data(data["candidate"]),
+        )
+
+
+@dataclass(frozen=True)
+class UpdateOptions:
+    mounts: tuple[str, ...] = ()
+    workspaces: tuple[str, ...] = ()
+    remove_mounts: tuple[str, ...] = ()
+    ports: tuple[str, ...] = ()
+    remove_ports: tuple[str, ...] = ()
+    env: tuple[str, ...] = ()
+    unset_env: tuple[str, ...] = ()
+    shell: str | None = None
+    workdir: str | None = None
+    resources: tuple[tuple[str, int | None], ...] = ()
 
 
 def validate_machine_name(name: str) -> str:

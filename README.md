@@ -1,124 +1,39 @@
 # mimchine
 
-Ergonomic named development environments from OCI images. Uses Podman by
-default on local Linux; Docker is also supported, including on macOS.
+**Persistent development sandboxes.**
 
-## use
+A Linux userspace of your choice, with your projects mounted and your tools,
+files, and shell history kept between sessions.
+
+## Use
+
+Build from your project's `Containerfile`, then enter the sandbox:
 
 ```sh
-mim doctor
-mim build app:dev -f Containerfile -C .
+mim build app:dev -f Containerfile
 mim create dev --image app:dev --workspace .
 mim enter dev
-mim exec dev pwd
-mim stop dev
-mim delete dev -f
 ```
 
-Common creation options:
+Your project files stay on the host; `--workspace .` shares them with the sandbox.
+Return with `mim enter dev`, or stop it between sessions with `mim stop dev`.
+
+## Install
+
+Requires Python 3.11+ and a container engine: Podman on Linux, or Docker on Linux
+and macOS. Install from a checkout of this repository with uv:
 
 ```sh
-mim create dev --image app:dev --start
-mim create dev --image app:dev --mount ./cache:/cache:ro
-mim create web --image app:dev --port 127.0.0.1:8080:80 --net
-mim create git --image app:dev --ssh-agent
-mim create dev --image app:dev --host-user
-mim create dev --image app:dev --runner docker
+uv tool install .
 ```
 
-See [machine management](docs/machines.md) for inspection, recovery, and
-adopting existing machines.
+Podman is the default. For Docker, use `--builder docker` when building and
+`--runner docker` when creating a machine, or save them as
+[defaults](docs/machines.md#save-settings-in-a-profile).
 
-## gpu
+## Guides
 
-```sh
-mim setup gpu
-mim create dev --image app:dev --gpu
-```
-
-With Podman on native Linux, `--gpu` exposes every detected GPU. NVIDIA
-requires NVIDIA Container Toolkit with CDI. The image supplies its own Mesa,
-ROCm, or CUDA userspace libraries.
-
-## configuration
-
-`~/.config/mimchine/config.toml`:
-
-```toml
-[defaults]
-builder = "podman"
-runner = "podman"
-network = "default"
-shell = "auto"
-cpus = 2
-memory = 2048
-
-[profiles.work]
-image = "app:dev"
-workspace = ".:/work/project"
-env = ["EDITOR=nvim"]
-network = "none"
-identity = "host"
-```
-
-```sh
-mim create work --profile work
-mim enter work
-```
-
-## ssh
-
-```sh
-mim setup ssh
-ssh work.mim
-mim ssh work
-rsync -a ./src/ work.mim:/work/project/
-mim setup ssh --remove
-```
-
-SSH uses the engine's exec transport: no guest daemon, port, or network is
-required. Stopped machines start automatically. `rsync` must exist in the
-image when used.
-
-## shell state
-
-`mim enter` stores Bash and Zsh history under `/mim/shell-state`. Preserve it
-when deleting a machine with:
-
-```sh
-mim delete dev -f --keep-shell-state
-```
-
-## command memory limits
-
-With Podman on native Linux, cgroup v2, systemd, and crun:
-
-```sh
-mim create dev --image app:dev --job-limits
-mim exec --memory 512 dev make
-```
-
-The limit is in MiB and covers the command and its descendants.
-
-## isolation
-
-With a [Mim gVisor distribution](https://github.com/redthing1/gvisor) installed
-on Linux with rootless Podman:
-
-```sh
-mim doctor --isolation gvisor
-mim create dev --image app:dev --isolation gvisor --workspace .
-mim enter dev
-```
-
-Existing machines retain their isolation mode. See [isolation](docs/isolation.md)
-for installation, resource limits, supported features, and offline planning.
-
-## development
-
-```sh
-uv sync --locked
-uv run pytest
-uv run mim --help
-uv run mim build mim-fed:dev -f demo/mim_fed.docker -C demo
-```
+- [Working with machines](docs/machines.md) — shared files, ports, profiles and SSH.
+- [Changing settings](docs/updates.md) — mounts, ports and resource limits after creation.
+- [gVisor isolation](docs/isolation.md) — optional isolation with rootless Podman on Linux.
+- [Development](docs/development.md) — working on Mim and running tests.

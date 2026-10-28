@@ -17,6 +17,7 @@ from .domain import (
     IsolationMode,
     MachineObservation,
     NetworkMode,
+    UpdateOptions,
 )
 from .gpu import inspect_gpu_host
 from .log import configure_logging, logger
@@ -321,6 +322,101 @@ def create(
             typer.echo(json.dumps(service.plan(options).to_data(), indent=2))
         else:
             service.create(options)
+
+    _run(action)
+
+
+@app.command(no_args_is_help=True)
+def update(
+    name: str = typer.Argument(..., help="Machine name."),
+    mounts: list[str] = typer.Option(
+        [], "--mount", "-M", help="Set HOST:GUEST[:ro] by guest destination."
+    ),
+    workspaces: list[str] = typer.Option(
+        [], "--workspace", "-W", help="Set a workspace: HOST[:GUEST[:ro]]."
+    ),
+    remove_mounts: list[str] = typer.Option(
+        [], "--remove-mount", help="Detach a guest destination; keep host files."
+    ),
+    ports: list[str] = typer.Option(
+        [],
+        "--port",
+        "-p",
+        help="Set [ADDRESS:]HOST:GUEST[/tcp|udp]; default address is loopback.",
+    ),
+    remove_ports: list[str] = typer.Option(
+        [], "--remove-port", help="Remove an exact port mapping using the same syntax."
+    ),
+    env: list[str] = typer.Option(
+        [], "--env", "-e", help="Set an environment override, KEY=VALUE."
+    ),
+    unset_env: list[str] = typer.Option(
+        [], "--unset-env", help="Remove an override, restoring the image default."
+    ),
+    shell: Optional[str] = typer.Option(
+        None, "--shell", help="Shell for future sessions."
+    ),
+    workdir: Optional[str] = typer.Option(
+        None, "--workdir", "-w", help="Default absolute guest working directory."
+    ),
+    cpus: Optional[str] = typer.Option(
+        None, "--cpus", help="CPU ceiling, or unlimited."
+    ),
+    memory: Optional[str] = typer.Option(
+        None, "--memory", help="Memory ceiling in MiB, or unlimited."
+    ),
+    swap: Optional[str] = typer.Option(
+        None, "--swap", help="Swap ceiling in MiB (0 disables), or unlimited."
+    ),
+    tasks: Optional[str] = typer.Option(
+        None, "--tasks", help="Host task ceiling, or unlimited."
+    ),
+    restart: bool = typer.Option(
+        False, "--restart", help="Allow interruption if replacement is required."
+    ),
+    plan: bool = typer.Option(
+        False, "--plan", help="Preview changes without engine calls or state writes."
+    ),
+) -> None:
+    """Change settings while preserving the machine's files."""
+
+    def action() -> None:
+        resources = []
+        for key, value in (
+            ("cpus", cpus),
+            ("memory_mib", memory),
+            ("swap_mib", swap),
+            ("tasks", tasks),
+        ):
+            if value is not None:
+                try:
+                    resources.append(
+                        (key, None if value == "unlimited" else int(value))
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        "resource limits must be integers or unlimited"
+                    ) from exc
+        options = UpdateOptions(
+            tuple(mounts),
+            tuple(workspaces),
+            tuple(remove_mounts),
+            tuple(ports),
+            tuple(remove_ports),
+            tuple(env),
+            tuple(unset_env),
+            shell,
+            workdir,
+            tuple(resources),
+        )
+        service = MachineService.default()
+        if plan:
+            typer.echo(
+                json.dumps(service.plan_update(name, options).to_data(), indent=2)
+            )
+        else:
+            result = service.update(name, options, restart=restart)
+            typer.echo("No changes." if result.effect == "none" else f"Updated {name}.")
 
     _run(action)
 

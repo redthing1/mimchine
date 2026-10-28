@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field, replace
+from uuid import uuid4
 
 from mimchine.domain import (
     ContainerAllocation,
@@ -14,6 +15,7 @@ from mimchine.domain import (
     MissingContainer,
     Operation,
     RuntimeState,
+    RootfsImage,
 )
 from mimchine.process import ProcessError, ProcessResult
 
@@ -226,3 +228,97 @@ class RecordingProcessRunner:
         if check and code:
             raise ProcessError(result)
         return result
+
+
+class UpdateFakeEngine:
+    """Multiple exact allocations, with failures on either side of a reply."""
+
+    name = "podman"
+
+    def __init__(self):
+        self.objects = {}
+        self.names = {}
+        self.calls = []
+        self.fail = None
+        self.images = {}
+        self.inspected = []
+
+    def context(self):
+        return context(self.name)
+
+    def trip(self, action):
+        self.calls.append(action)
+        if self.fail == action:
+            self.fail = None
+            raise RuntimeError(f"injected {action}")
+
+    def allocate(self, machine):
+        self.trip("allocate")
+        cid = uuid4().hex * 2
+        target = ContainerAllocation(cid, self.context(), machine.labels)
+        data = json.loads(configuration(machine.spec))
+        data["started_at"] = "0001-01-01T00:00:00Z"
+        self.objects[cid] = MachineObservation(
+            cid,
+            self.context(),
+            machine.rootfs.image_id if machine.rootfs else IMAGE_ID,
+            "crun",
+            target.labels,
+            RuntimeState.STOPPED,
+            json.dumps(data),
+        )
+        self.names[machine.backend_name] = cid
+        self.trip("allocated_reply")
+        return target
+
+    def observe(self, target):
+        self.inspected.append(target)
+        cid = self.names.get(target, target)
+        return self.objects.get(cid, MissingContainer(self.context()))
+
+    def start(self, machine):
+        self.trip("start")
+        cid = machine.target.container_id
+        data = json.loads(self.objects[cid].configuration)
+        data["started_at"] = "2026-01-01T00:00:00Z"
+        self.objects[cid] = replace(
+            self.objects[cid],
+            state=RuntimeState.RUNNING,
+            configuration=json.dumps(data),
+        )
+
+    def stop(self, machine):
+        self.trip("stop")
+        cid = machine.target.container_id
+        self.objects[cid] = replace(self.objects[cid], state=RuntimeState.STOPPED)
+
+    def delete(self, machine):
+        self.trip("delete")
+        self.objects.pop(machine.target.container_id, None)
+        self.trip("deleted_reply")
+
+    def prepare_replacement(self, machine):
+        self.trip("preflight")
+
+    def preserve_rootfs(self, machine, token, directory):
+        self.trip("snapshot")
+        image = self.images.setdefault(
+            token, RootfsImage("sha256:" + uuid4().hex * 2, token, "crun")
+        )
+        self.trip("snapshot_reply")
+        return image
+
+    def verify_replacement(self, machine):
+        self.trip("verify")
+
+    def remove_rootfs(self, machine, *, token=None):
+        self.trip("image_cleanup")
+        if token or machine.rootfs:
+            self.images.pop(token or machine.rootfs.token, None)
+
+    def update_resources(self, before, after):
+        self.trip("resources")
+        cid = before.target.container_id
+        self.objects[cid] = replace(
+            self.objects[cid], configuration=configuration(after.spec)
+        )

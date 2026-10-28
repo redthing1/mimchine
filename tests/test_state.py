@@ -128,7 +128,7 @@ def test_failed_atomic_replace_preserves_old_record_and_cleans_temporary_file(
     assert not list(store.machine_dir("dev").glob(".mim-*"))
 
 
-@pytest.mark.parametrize("version", [None, 1, 5, "2", True, 3.0])
+@pytest.mark.parametrize("version", [None, 1, SCHEMA_VERSION + 1, "2", True, 3.0])
 def test_unsupported_schema_does_not_suggest_an_unavailable_migration(
     tmp_path, version
 ):
