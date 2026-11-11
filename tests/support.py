@@ -13,6 +13,7 @@ from mimchine.domain import (
     MachineObservation,
     MachineSpec,
     MissingContainer,
+    MountSpec,
     Operation,
     RuntimeState,
     RootfsImage,
@@ -322,3 +323,30 @@ class UpdateFakeEngine:
         self.objects[cid] = replace(
             self.objects[cid], configuration=configuration(after.spec)
         )
+
+
+def replacement_engine(monkeypatch, tmp_path, *, runner="podman", **features):
+    from mimchine.engines import get_engine
+
+    machine = make_machine(
+        engine=runner, mounts=(MountSpec(tmp_path, "/data"),), **features
+    )
+    data = json.loads(configuration(machine.spec))
+    engine = get_engine(runner, RecordingProcessRunner(engine=runner))
+
+    def observe(target):
+        return MachineObservation(
+            target.target.container_id,
+            target.target.context,
+            target.binding.image_id,
+            target.binding.runtime,
+            target.labels,
+            RuntimeState.STOPPED,
+            json.dumps(data),
+        )
+
+    monkeypatch.setattr(engine, "_observe_target", observe)
+    monkeypatch.setattr(engine, "_image_metadata", lambda image: {"Config": {}})
+    monkeypatch.setattr(engine, "_gpu_args", lambda: ())
+    monkeypatch.setattr(engine, "_job_limits_args", lambda spec: ())
+    return engine, machine, data

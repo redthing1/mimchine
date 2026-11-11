@@ -39,8 +39,8 @@ MIM_UPDATE_LIVE=1 MIM_UPDATE_RUNNER=podman MIM_UPDATE_IMAGE=sha256:... \
 
 For Docker, set `MIM_UPDATE_RUNNER=docker` and select a disposable daemon with
 `DOCKER_HOST`. The suite uses temporary Mim state and removes its owned
-containers and private images. It covers preservation, mounts, port reachability,
-resource changes, identity, interrupted operations and CLI usage.
+containers and private images. Set `MIM_UPDATE_FEATURES=1` to include GPU
+forwarding and job limits on a suitable Podman host.
 
 ### gVisor
 

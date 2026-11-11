@@ -124,7 +124,7 @@ class MachineStore:
             data["schema_version"] = version = SCHEMA_VERSION
         if type(version) is int and version == 4:
             data["schema_version"] = version = SCHEMA_VERSION
-        if type(version) is not int or version != SCHEMA_VERSION:
+        if type(version) is not int or version not in (5, SCHEMA_VERSION):
             raise ValueError(f"unsupported machine record schema: {version!r}")
         machine = Machine.from_data(data)
         if machine.name != name:

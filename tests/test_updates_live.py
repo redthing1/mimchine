@@ -71,6 +71,8 @@ def live(tmp_path):
     try:
         yield service, engine, name
     finally:
+        # Cleanup must not inherit a test's injected failures.
+        service.engines[runner] = get_engine(runner)
         if service.store.exists(name):
             service.delete(name)
 
@@ -327,12 +329,24 @@ def test_live_host_identity_survives_replacement(live):
             start=True,
         )
     )
-    execute(service, name, "id -u >/tmp/synthetic-uid; id -g >/tmp/synthetic-gid")
+    execute(
+        service,
+        name,
+        "id -u >/tmp/synthetic-uid; id -g >/tmp/synthetic-gid; "
+        "mkdir /tmp/synthetic-private; chmod 700 /tmp/synthetic-private; "
+        "echo private >/tmp/synthetic-private/file; chmod 600 /tmp/synthetic-private/file; "
+        "stat -c '%u:%g:%a' /tmp/synthetic-private /tmp/synthetic-private/file "
+        ">/tmp/synthetic-owners",
+    )
     service.update(name, UpdateOptions(env=("IDENTITY=retained",)), restart=True)
     execute(
         service,
         name,
-        'test "$(id -u)" = "$(cat /tmp/synthetic-uid)"; test "$(id -g)" = "$(cat /tmp/synthetic-gid)"',
+        'test "$(id -u)" = "$(cat /tmp/synthetic-uid)"; '
+        'test "$(id -g)" = "$(cat /tmp/synthetic-gid)"; '
+        "stat -c '%u:%g:%a' /tmp/synthetic-private /tmp/synthetic-private/file "
+        ">/tmp/synthetic-current; cmp /tmp/synthetic-owners /tmp/synthetic-current; "
+        "test -r /tmp/synthetic-private/file",
     )
 
 
@@ -368,7 +382,7 @@ def test_live_cli_preview_and_apply(live, tmp_path, monkeypatch):
     assert "--restart" in errors[-1]
     result = runner.invoke(cli.app, [*arguments, "--restart"])
     assert result.exit_code == 0, result.output
-    assert f"Updated {name}." in result.output
+    assert f"Updated {name} (" in result.output
     execute(
         service,
         name,
@@ -376,3 +390,172 @@ def test_live_cli_preview_and_apply(live, tmp_path, monkeypatch):
     )
     repeated = runner.invoke(cli.app, arguments)
     assert repeated.exit_code == 0 and "No changes." in repeated.output
+
+
+def test_live_recovery_reuses_snapshot_after_lost_reply(live, monkeypatch):
+    service, engine, name = live
+    preserve = engine.preserve_rootfs
+    snapshots = []
+
+    def lost_reply(*args):
+        snapshot = preserve(*args)
+        snapshots.append(snapshot.image_id)
+        raise RuntimeError("synthetic lost snapshot reply")
+
+    monkeypatch.setattr(engine, "preserve_rootfs", lost_reply)
+    with pytest.raises(RuntimeError, match="lost snapshot"):
+        service.update(name, UpdateOptions(env=("RECOVERED=yes",)), restart=True)
+    monkeypatch.setattr(engine, "preserve_rootfs", preserve)
+    service.recover(name)
+    assert service.store.load(name).rootfs.image_id == snapshots[0]
+    execute(service, name, 'test "$RECOVERED" = yes')
+
+
+def test_live_image_identity_preserves_private_files_across_updates(live, tmp_path):
+    service, engine, name = live
+    base = service.store.load(name).binding.image_id
+    service.delete(name)
+    tag = "localhost/mim-update-fixture:" + uuid4().hex
+    dockerfile = tmp_path / "Containerfile"
+    dockerfile.write_text(
+        f"FROM {base}\n"
+        "RUN adduser -D -u 1234 developer && chmod 700 /home/developer "
+        "&& echo root >/var/tmp/root-file && chmod 600 /var/tmp/root-file\n"
+        "ENV HOME=/home/developer BASE_SETTING=image\n"
+        "USER 1234:1234\nWORKDIR /home/developer\n"
+    )
+    engine.process.run(
+        (
+            *engine.prefix,
+            "build",
+            "--pull=never" if engine.name == "podman" else "--pull=false",
+            "--network=none",
+            "-t",
+            tag,
+            "-f",
+            str(dockerfile),
+            str(tmp_path),
+        ),
+        capture=True,
+        cwd="/",
+        env={"DOCKER_BUILDKIT": "0"},
+    )
+    image = engine._image_metadata(tag)["Id"]
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "marker").write_text("raw")
+    try:
+        service.create(
+            CreateOptions(
+                name,
+                image=image,
+                runner=engine.name,
+                start=True,
+                env=("BASE_SETTING=override", "TEMP_SETTING=remove"),
+                container_args=("--cap-drop=NET_RAW", "-v", f"{raw}:/raw:ro,z"),
+            )
+        )
+        execute(
+            service,
+            name,
+            r"""
+mkdir -m 700 /tmp/private-1234
+echo private >"$HOME/private"
+echo private >/tmp/private-1234/file
+chmod 600 "$HOME/private" /tmp/private-1234/file
+ln "$HOME/private" "$HOME/hardlink"
+ln -s private "$HOME/symlink"
+""",
+        )
+        layers = engine._image_metadata(image)["RootFS"]["Layers"]
+        for step in range(3):
+            options = (
+                UpdateOptions(
+                    mounts=(f"{raw}:/shared:ro,z",),
+                    unset_env=("BASE_SETTING", "TEMP_SETTING"),
+                )
+                if step == 0
+                else UpdateOptions(env=(f"STEP={step}",))
+            )
+            service.update(name, options, restart=True)
+            execute(
+                service,
+                name,
+                r"""
+test "$(id -u)" = 1234
+test "$HOME" = /home/developer
+test "$BASE_SETTING" = image
+test -z "${TEMP_SETTING+x}"
+test "$(stat -c '%u:%g:%a' "$HOME" /tmp/private-1234)" = "1234:1234:700
+1234:1234:700"
+test "$(stat -c '%u:%g:%a' "$HOME/private" /tmp/private-1234/file)" = "1234:1234:600
+1234:1234:600"
+test "$(stat -c '%u:%g:%a' /var/tmp/root-file)" = 0:0:600
+test "$(stat -c %i "$HOME/private")" = "$(stat -c %i "$HOME/hardlink")"
+test "$(readlink "$HOME/symlink")" = private
+test "$(cat /tmp/private-1234/file)" = private
+test "$(cat /raw/marker)" = raw
+test "$(cat /shared/marker)" = raw
+test -w "$HOME/private"
+""",
+            )
+            snapshot = service.store.load(name).rootfs
+            if engine.name == "podman":
+                assert (
+                    engine._image_metadata(snapshot.image_id)["RootFS"]["Layers"][
+                        : len(layers)
+                    ]
+                    == layers
+                )
+    finally:
+        if service.store.exists(name):
+            service.delete(name)
+        engine.process.run(
+            (*engine.prefix, "image", "rm", image), capture=True, cwd="/"
+        )
+
+
+@pytest.mark.skipif(
+    os.environ.get("MIM_UPDATE_FEATURES") != "1",
+    reason="GPU and delegated job limits require explicit opt-in",
+)
+def test_live_gpu_and_job_limits_survive_replacement(live, tmp_path):
+    from mimchine.gpu import inspect_gpu_host
+    from mimchine.job_limits import require_host
+
+    service, engine, name = live
+    if engine.name != "podman":
+        pytest.skip("GPU forwarding and job limits require Podman")
+    host = inspect_gpu_host()
+    try:
+        host.require_ready()
+        require_host(engine._info())
+    except ValueError as error:
+        pytest.skip(str(error))
+    image = service.store.load(name).binding.image_id
+    service.delete(name)
+    service.create(
+        CreateOptions(
+            name,
+            image=image,
+            runner="podman",
+            identity=IdentityMode.HOST,
+            shell_state=False,
+            gpu=True,
+            job_limits=True,
+            start=True,
+        )
+    )
+    command = ExecSpec(
+        ("sh", "-ec", "grep -q /jobs/job- /proc/self/cgroup"), memory_mib=16
+    )
+    service.exec(name, command)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    service.update(name, UpdateOptions(mounts=(f"{shared}:/shared:z",)), restart=True)
+    service.exec(name, command)
+    devices = (*host.devices, *(("/dev/nvidiactl",) if host.nvidia else ()))
+    for device in devices:
+        service.exec(
+            name, ExecSpec(("sh", "-ec", 'test -c "$1"', "gpu-check", str(device)))
+        )

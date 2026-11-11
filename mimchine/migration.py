@@ -125,7 +125,7 @@ class MigrationService:
             data = json.loads(source)
             if not isinstance(data, dict):
                 raise ValueError("machine record must be an object")
-            if data.get("schema_version") in (3, SCHEMA_VERSION):
+            if data.get("schema_version") in (3, 4, 5, SCHEMA_VERSION):
                 current = self.store.load(name)
                 if (
                     current.id == machine.id

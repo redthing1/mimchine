@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from time import monotonic
 from typing import Optional
 
 import typer
@@ -415,8 +416,13 @@ def update(
                 json.dumps(service.plan_update(name, options).to_data(), indent=2)
             )
         else:
+            started = monotonic()
             result = service.update(name, options, restart=restart)
-            typer.echo("No changes." if result.effect == "none" else f"Updated {name}.")
+            typer.echo(
+                "No changes."
+                if result.effect == "none"
+                else f"Updated {name} ({monotonic() - started:.1f}s)."
+            )
 
     _run(action)
 

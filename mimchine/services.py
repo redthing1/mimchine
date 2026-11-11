@@ -419,6 +419,7 @@ class MachineService:
                 machine = replace(machine, update=journal)
                 self.store.save(machine)
             if journal.stage == "prepared":
+                logger.info("Updating %s...", machine.name)
                 observed = self._observe(before, engine)
                 if observed is None:
                     raise ValueError(
@@ -435,6 +436,11 @@ class MachineService:
                 machine = replace(machine, update=journal)
                 self.store.save(machine)
             if journal.stage == "stopped":
+                logger.info(
+                    "Saving filesystem changes..."
+                    if before.spec.engine == "podman"
+                    else "Copying filesystem..."
+                )
                 rootfs = engine.preserve_rootfs(
                     before, journal.token, self.store.machine_dir(machine.name)
                 )
@@ -497,6 +503,7 @@ class MachineService:
                 self.store.save(machine)
             candidate = journal.candidate
             if journal.running:
+                logger.info("Starting %s...", machine.name)
                 self._ensure_running(candidate, engine)
             observed = self._observe(before, engine, strict=False)
             if observed is not None:
@@ -514,6 +521,9 @@ class MachineService:
             # Reload the durable journal: never overwrite a later stage with
             # the caller's older in-memory record after a save failure.
             self._remember_error(self.store.load(machine.name), exc)
+            logger.warning(
+                "Update incomplete; run `mim recover %s` to retry.", machine.name
+            )
             raise
 
     def _plan(self, spec: MachineSpec) -> MachinePlan:

@@ -71,7 +71,6 @@ class UpdatePlan:
             interruption="requires --restart if running"
             if self.effect == "replace"
             else "no restart",
-            execution_enabled=False,
         )
 
 

@@ -10,10 +10,8 @@ mim update dev --mount ./data:/data:ro --port 8080:80 --plan
 mim update dev --mount ./data:/data:ro --port 8080:80 --restart
 ```
 
-The preview shows what will change and whether it needs a replacement. It runs
-without engine calls or state writes, and redacts environment values. Applying
-the update checks the container binding and engine readiness; the preview does
-not reserve ports.
+`--plan` previews changes and replacement requirements without engine calls or
+state writes. Environment values are redacted.
 
 | Settings | Effect |
 | --- | --- |
@@ -21,10 +19,9 @@ not reserve ports.
 | Resource ceilings | Updates in place; clearing a CPU or memory ceiling requires replacement |
 | Mounts, ports, environment, working directory | Replaces the container |
 
-A running replacement requires `--restart` to interrupt sessions. Otherwise,
-stop the machine before applying it. Stopped machines stay stopped; in-place
-changes do not restart. Native Podman and Docker support these updates; gVisor
-supports only shell changes.
+A running replacement requires `--restart`; stopped machines stay stopped.
+Native Podman and Docker support these updates; gVisor supports only shell
+changes.
 
 ## Set or remove a value
 
@@ -35,25 +32,24 @@ mim update dev --cpus 4 --memory 8192
 mim update dev --shell zsh
 ```
 
-A mount replaces the entry at its guest destination. Removing it keeps host
-files; other aliases can still expose the same source. Internal shell-history
-mounts cannot be edited. A port replaces the mapping for its host address, port
-and protocol; removal requires the exact mapping. `--unset-env` removes a Mim
-override, restoring the image default if present.
+A mount replaces the entry at its guest destination; removing it leaves host
+files intact. Managed shell-history mounts cannot be edited. Ports are keyed by
+host address, port and protocol; removal requires the exact mapping.
+`--unset-env` removes an override, restoring the image default if present.
 
 Use `unlimited` to clear a resource ceiling, or `--swap 0` to disable swap.
 Lowering a memory ceiling can terminate workload processes.
 
 ## What replacement preserves
 
-Replacement copies the stopped root filesystem into a private local image,
-preserving file contents, numeric ownership, modes, hard links and symlinks.
-Shared files and shell history stay on the host. Running processes, connections
-and memory-backed data do not survive replacement. ACLs and extended attributes
-are not guaranteed.
+Replacement preserves filesystem contents, numeric ownership, modes, hard links
+and symlinks. Bind-mounted data and shell history stay on the host. Processes,
+connections and memory-backed data do not survive replacement. ACLs and extended
+attributes are not guaranteed.
 
-Allow temporary disk space for a full filesystem copy. Mim removes obsolete
-private images after replacement and the active image on deletion.
+Podman snapshots changes using existing image layers. Docker copies the full
+filesystem and needs temporary space for that copy. Mim removes obsolete
+private images; shared layers remain while needed.
 
 Replacement preserves GPU forwarding, command job limits and raw container
 arguments. Use Mim options to change mounts, ports, environment and working
@@ -61,23 +57,21 @@ directory.
 
 Replacement requires:
 
-- Bind mounts with destinations that do not conflict with raw arguments or features.
+- Bind mounts with distinct guest destinations.
 - No SSH-agent forwarding.
-- An image without declared volumes, healthchecks, ONBUILD instructions or
-  multiline configuration values.
 - Explicit port addresses. Remove or replace rules with omitted addresses in
   the same update.
 
-Runner, image, identity and isolation changes are outside this command's scope.
+Docker also requires an image without declared volumes, healthchecks, ONBUILD
+instructions or multiline configuration values.
+
+`mim update` cannot change the runner, image, identity or isolation mode.
 
 ## Recover an interrupted update
 
-Address the reported error, then run `mim recover dev` to finish the update.
-Execution and stop remain blocked until recovery finishes. Recovery completes
-the requested change; it does not roll back application writes to shared mounts.
+Fix the reported error, then run `mim recover dev` to resume the update.
 
-To discard the machine instead, use `mim delete dev`. This also removes pending
-allocations and private images. Failed deletion is retryable with the same
-command; recovery cannot resume an update once deletion has begun.
+Use `mim delete dev` to discard a machine with a pending update. Retry failed
+deletion with the same command.
 
 See [working with machines](machines.md) for creation and lifecycle commands.

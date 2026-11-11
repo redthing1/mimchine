@@ -70,6 +70,13 @@ class _ContainerEngine(UpdateEngineMixin):
             name=machine.backend_name,
             image=machine.rootfs.image_id if machine.rootfs else machine.spec.image,
         )
+        snapshot = machine.rootfs
+        if snapshot and snapshot.image_env is not None:
+            spec = replace(
+                spec,
+                env=(*snapshot.image_env, *spec.env),
+                workdir=spec.workdir or snapshot.image_workdir or "/",
+            )
         validate_container_args(spec.container_args)
         context = self.context()
         if machine.creation_context is not None and machine.creation_context != context:
@@ -92,6 +99,11 @@ class _ContainerEngine(UpdateEngineMixin):
             identity_args=identity,
             engine_args=(
                 *(("--tz=local",) if self.name == "podman" else ()),
+                *(
+                    ("--unsetenv-all",)
+                    if snapshot and snapshot.image_env is not None
+                    else ()
+                ),
                 *(("--runtime", machine.rootfs.runtime) if machine.rootfs else ()),
             ),
             feature_args=(*features, *job_args),
@@ -335,6 +347,18 @@ class _ContainerEngine(UpdateEngineMixin):
             "memory_swap": host_config.get("MemorySwap"),
             "pids_limit": host_config.get("PidsLimit"),
             "started_at": state.get("StartedAt"),
+            "security": {
+                key: host_config.get(key)
+                for key in (
+                    "Privileged",
+                    "ReadonlyRootfs",
+                    "CapAdd",
+                    "CapDrop",
+                    "SecurityOpt",
+                    "GroupAdd",
+                    "CgroupnsMode",
+                )
+            },
             "boundary": {
                 "pid": state.get("Pid"),
                 "conmon_pid": state.get("ConmonPid"),

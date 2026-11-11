@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 MACHINE_NAME_PATTERN = re.compile(
     r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?"
     r"(?:\.[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)*"
@@ -567,6 +567,9 @@ class RootfsImage:
     token: str
     runtime: str
     identity_args: tuple[str, ...] = ()
+    # Commits contain container overrides; keep image defaults separately.
+    image_env: tuple[str, ...] | None = None
+    image_workdir: str = ""
 
     def __post_init__(self) -> None:
         if re.fullmatch(r"(?:sha256:)?[a-f0-9]{64}", self.image_id) is None:
@@ -574,6 +577,15 @@ class RootfsImage:
         if str(UUID(self.token)) != self.token:
             raise ValueError("invalid rootfs ownership token")
         _require_text(self.runtime, "rootfs runtime")
+        object.__setattr__(self, "identity_args", tuple(self.identity_args))
+        if self.image_env is not None:
+            object.__setattr__(
+                self, "image_env", tuple(_parse_env(v) for v in self.image_env)
+            )
+        if not isinstance(self.image_workdir, str) or (
+            self.image_workdir and not self.image_workdir.startswith("/")
+        ):
+            raise ValueError("rootfs working directory must be absolute")
 
     @property
     def tag(self) -> str:
@@ -585,6 +597,8 @@ class RootfsImage:
             token=self.token,
             runtime=self.runtime,
             identity_args=list(self.identity_args),
+            image_env=None if self.image_env is None else list(self.image_env),
+            image_workdir=self.image_workdir,
         )
 
     @classmethod
@@ -594,6 +608,8 @@ class RootfsImage:
             data["token"],
             data["runtime"],
             tuple(data.get("identity_args", [])),
+            None if data.get("image_env") is None else tuple(data["image_env"]),
+            data.get("image_workdir", ""),
         )
 
 
@@ -795,7 +811,7 @@ class Machine:
     @classmethod
     def from_data(cls, data: dict[str, Any]) -> "Machine":
         version = data["schema_version"]
-        if type(version) is not int or version != SCHEMA_VERSION:
+        if type(version) is not int or version not in (5, SCHEMA_VERSION):
             raise ValueError(f"unsupported machine record schema: {version!r}")
         return cls(
             id=data["id"],

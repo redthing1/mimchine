@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from uuid import UUID
 
@@ -55,6 +56,9 @@ class UpdateEngineMixin:
         extra = {}
         for mount in data["mounts"]:
             destination = mount["Destination"]
+            if destination in found:
+                raise ValueError("actual mount destinations are ambiguous")
+            found.add(destination)
             if mount.get("Type", "bind") != "bind":
                 raise ValueError(
                     "replacement requires bind mounts; volumes and tmpfs are unsupported"
@@ -78,8 +82,7 @@ class UpdateEngineMixin:
                 not wanted.read_only
             ):
                 raise ValueError("actual mount differs from saved settings")
-            found.add(destination)
-        if found != expected.keys():
+        if found - extra.keys() != expected.keys():
             raise ValueError("actual mounts differ from saved settings")
         return extra
 
@@ -98,28 +101,33 @@ class UpdateEngineMixin:
                     raise ValueError(
                         f"mount destination {mount.target} conflicts with container arguments or features"
                     )
-            # Check feature prerequisites before stopping.
             if desired.gpu:
                 self._gpu_args()
             if desired.job_limits:
                 self._job_limits_args(desired)
-        self._import_changes(machine, token="validation")
+        metadata = self._replacement_image(machine)
+        if self.name == "docker":
+            self._import_changes(metadata, token="validation")
 
     def verify_replacement(self, machine: Machine, *, before: Machine) -> None:
-        self.prepare_replacement(machine)
         observed = self._observe_target(machine)
+        if observed.state is not RuntimeState.STOPPED:
+            raise ValueError("replacement must be stopped before verification")
         data = json.loads(observed.configuration)
         original = json.loads(self._observe_target(before).configuration)
         if self._replacement_mounts(machine, data) != self._replacement_mounts(
             before, original
         ):
-            raise ValueError(
-                "replacement bind mounts differ from original"
-            )
+            raise ValueError("replacement bind mounts differ from original")
         if (data.get("boundary") or {}).get("devices") != (
             original.get("boundary") or {}
         ).get("devices"):
             raise ValueError("replacement devices differ from original")
+        for field in ("user", "id_mappings", "network", "security"):
+            if data.get(field) != original.get(field):
+                raise ValueError(
+                    f"replacement {field.replace('_', ' ')} differs from original"
+                )
         self._replacement_settings(machine, data)
 
     def _replacement_settings(self, machine: Machine, data: dict) -> None:
@@ -146,11 +154,12 @@ class UpdateEngineMixin:
             raise ValueError(
                 "replacement working directory differs from requested settings"
             )
+        self._verify_resources(machine, data)
 
-    def _import_changes(
-        self, machine: Machine, *, token: str
-    ) -> tuple[list[str], dict]:
+    def _replacement_image(self, machine: Machine) -> dict:
         metadata = self._image_metadata(machine.binding.image_id)
+        if self.name == "podman":
+            return metadata
         config = metadata.get("Config") or {}
         if (
             config.get("Volumes")
@@ -163,6 +172,10 @@ class UpdateEngineMixin:
             raise ValueError(
                 "replacement does not support images with ONBUILD instructions"
             )
+        return metadata
+
+    def _import_changes(self, metadata: dict, *, token: str) -> list[str]:
+        config = metadata.get("Config") or {}
         changes = [f"LABEL mimchine.snapshot={token}"]
         for entry in config.get("Env") or []:
             key, value = entry.split("=", 1)
@@ -179,7 +192,7 @@ class UpdateEngineMixin:
                 changes.append(f"LABEL {_quoted(key)}={_quoted(value)}")
         for port in sorted(config.get("ExposedPorts") or {}):
             changes.append(f"EXPOSE {_quoted(port)}")
-        return changes, metadata
+        return changes
 
     def preserve_rootfs(
         self, machine: Machine, token: str, directory: Path
@@ -199,17 +212,60 @@ class UpdateEngineMixin:
                 for mapping in mappings.get(key) or []:
                     identity += [flag, mapping]
         template = RootfsImage("0" * 64, token, observed.runtime, tuple(identity))
+        metadata = self._replacement_image(machine)
+        if self.name == "podman":
+            defaults = machine.rootfs
+            config = metadata.get("Config") or {}
+            template = replace(
+                template,
+                image_env=(
+                    defaults.image_env
+                    if defaults and defaults.image_env is not None
+                    else tuple(config.get("Env") or [])
+                ),
+                image_workdir=(
+                    defaults.image_workdir
+                    if defaults and defaults.image_env is not None
+                    else config.get("WorkingDir") or ""
+                ),
+            )
         existing = self._image_metadata(template.tag, missing_ok=True)
         if existing is not None:
             if (existing.get("Config", {}).get("Labels") or {}).get(
                 "mimchine.snapshot"
             ) != token:
                 raise ValueError("rootfs image ownership differs from update")
-            return RootfsImage(existing["Id"], token, observed.runtime, tuple(identity))
-        changes, metadata = self._import_changes(machine, token=token)
-        archive = directory / f"rootfs-{token}.tar"
-        # An interrupted export is always overwritten. Never read or unpack the
-        # workload archive in Mim, and never include external mounted contents.
+            return replace(template, image_id=existing["Id"])
+        if self.name == "podman":
+            self.process.run(
+                (
+                    *self.prefix,
+                    "commit",
+                    "--pause=false",
+                    "--include-volumes=false",
+                    "--change",
+                    f"LABEL mimchine.snapshot={token}",
+                    observed.container_id,
+                    template.tag,
+                ),
+                capture=True,
+                cwd="/",
+            )
+        else:
+            self._import_rootfs(machine, template, metadata, directory)
+        image = self._image_metadata(template.tag)
+        if (image.get("Config", {}).get("Labels") or {}).get(
+            "mimchine.snapshot"
+        ) != token:
+            raise ValueError("snapshot image ownership differs")
+        return replace(template, image_id=image["Id"])
+
+    def _import_rootfs(
+        self, machine: Machine, snapshot: RootfsImage, metadata: dict, directory: Path
+    ) -> None:
+        changes = self._import_changes(metadata, token=snapshot.token)
+        archive = directory / f"rootfs-{snapshot.token}.tar"
+        # Overwrite incomplete exports and keep the workload archive opaque.
         descriptor = os.open(
             archive, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600
         )
@@ -221,36 +277,20 @@ class UpdateEngineMixin:
                     "export",
                     "--output",
                     str(archive),
-                    observed.container_id,
+                    machine.target.container_id,
                 ),
                 capture=True,
                 cwd="/",
             )
             args = [*self.prefix, "import"]
-            if self.name == "podman":
-                args += [
-                    "--os",
-                    metadata.get("Os", "linux"),
-                    "--arch",
-                    metadata["Architecture"],
-                ]
-                if metadata.get("Variant"):
-                    args += ["--variant", metadata["Variant"]]
-            else:
-                platform = f"{metadata.get('Os', 'linux')}/{metadata['Architecture']}"
-                if metadata.get("Variant"):
-                    platform += "/" + metadata["Variant"]
-                args += ["--platform", platform]
+            platform = f"{metadata.get('Os', 'linux')}/{metadata['Architecture']}"
+            if metadata.get("Variant"):
+                platform += "/" + metadata["Variant"]
+            args += ["--platform", platform]
             for change in changes:
                 args += ["--change", change]
-            args += [str(archive), template.tag]
+            args += [str(archive), snapshot.tag]
             self.process.run(args, capture=True, cwd="/")
-            image = self._image_metadata(template.tag)
-            if (image.get("Config", {}).get("Labels") or {}).get(
-                "mimchine.snapshot"
-            ) != token:
-                raise ValueError("imported image ownership differs")
-            return RootfsImage(image["Id"], token, observed.runtime, tuple(identity))
         finally:
             archive.unlink(missing_ok=True)
 
@@ -298,7 +338,14 @@ class UpdateEngineMixin:
         )
         if current is None:
             raise ValueError("container disappeared during resource update")
-        data = json.loads(current.configuration)
+        self._verify_resources(after, json.loads(current.configuration))
+
+    def _verify_resources(self, machine: Machine, data: dict) -> None:
+        r = machine.spec.resources
+        swap = data.get("memory_swap")
+        # Podman reports unlimited swap as zero; Docker reports -1.
+        if self.name == "podman" and swap == 0:
+            swap = -1
         expected_memory = (r.memory_mib or 0) * 1024 * 1024
         actual_cpus = (data.get("nano_cpus") or 0) / 1e9 or (
             max(data.get("cpu_quota") or 0, 0) / (data.get("cpu_period") or 100000)
@@ -312,8 +359,8 @@ class UpdateEngineMixin:
         if (
             r.memory_mib
             and r.swap_mib is not None
-            and data.get("memory_swap") != (r.memory_mib + r.swap_mib) * 1024 * 1024
+            and swap != (r.memory_mib + r.swap_mib) * 1024 * 1024
         ):
             raise ValueError("engine did not apply requested swap limit")
-        if r.memory_mib and r.swap_mib is None and data.get("memory_swap") != -1:
+        if r.memory_mib and r.swap_mib is None and swap != -1:
             raise ValueError("engine did not clear the swap limit")
