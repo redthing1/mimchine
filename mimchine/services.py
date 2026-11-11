@@ -332,14 +332,6 @@ class MachineService:
         if machine.gvisor and plan.effect not in {"none", "metadata"}:
             raise ValueError("gVisor machines support only shell-preference updates")
         if plan.effect == "replace":
-            if (
-                machine.spec.container_args
-                or machine.spec.gpu
-                or machine.spec.job_limits
-            ):
-                raise ValueError(
-                    "replacement does not support raw container arguments, GPU or job limits"
-                )
             if machine.spec.ssh_agent:
                 raise ValueError("replacement does not support SSH-agent forwarding")
             if any(p.address is None for p in plan.after.ports):
@@ -370,9 +362,10 @@ class MachineService:
             if plan.effect == "replace":
                 if running and not restart:
                     raise ValueError(
-                        "this update replaces the container and interrupts sessions; use --restart or stop the machine first"
+                        "this update requires container replacement; stop the machine "
+                        "first or use --restart to interrupt sessions"
                     )
-                engine.prepare_replacement(machine)
+                engine.prepare_replacement(machine, desired=plan.after)
             journal = UpdateJournal(
                 machine, plan.after, str(uuid4()), running, plan.effect
             )
@@ -496,7 +489,7 @@ class MachineService:
                         candidate.target, observed.image_id, observed.runtime
                     ),
                 )
-                engine.verify_replacement(candidate)
+                engine.verify_replacement(candidate, before=before)
                 journal = replace(journal, stage="committed", candidate=candidate)
                 machine = replace(
                     candidate, operation=Operation.UPDATING, update=journal

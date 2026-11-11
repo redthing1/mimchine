@@ -297,7 +297,7 @@ class UpdateFakeEngine:
         self.objects.pop(machine.target.container_id, None)
         self.trip("deleted_reply")
 
-    def prepare_replacement(self, machine):
+    def prepare_replacement(self, machine, *, desired=None):
         self.trip("preflight")
 
     def preserve_rootfs(self, machine, token, directory):
@@ -308,7 +308,7 @@ class UpdateFakeEngine:
         self.trip("snapshot_reply")
         return image
 
-    def verify_replacement(self, machine):
+    def verify_replacement(self, machine, *, before):
         self.trip("verify")
 
     def remove_rootfs(self, machine, *, token=None):

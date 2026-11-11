@@ -478,3 +478,171 @@ def test_gvisor_updates_fail_before_touching_engine(tmp_path):
         service.update(machine.name, UpdateOptions(resources=(("cpus", 2),)))
     assert service.store.read(machine.name) == original
     assert not engine.calls and not engine.inspected
+
+
+@pytest.mark.parametrize(
+    "features",
+    [
+        {"container_args": ("--cap-drop=all",)},
+        {"gpu": True},
+        {"job_limits": True},
+        {
+            "gpu": True,
+            "job_limits": True,
+            "container_args": ("--security-opt=label=disable",),
+        },
+    ],
+)
+def test_feature_mount_update_preserves_session_until_explicit_restart(
+    tmp_path, features
+):
+    service, engine = service_at(tmp_path)
+    old = service.create(CreateOptions("dev", image="image", start=True, **features))
+    options = UpdateOptions(mounts=(f"{tmp_path}:/data",))
+    engine.calls.clear()
+    engine.inspected.clear()
+    original = service.store.read("dev")
+    assert service.plan_update("dev", options).effect == "replace"
+    assert not engine.calls and not engine.inspected
+    with pytest.raises(ValueError, match="--restart"):
+        service.update("dev", options)
+    assert not engine.calls
+    assert service.store.read("dev") == original
+    assert engine.objects[old.target.container_id].state.value == "running"
+    service.update("dev", options, restart=True)
+    new = service.store.load("dev")
+    for key, value in features.items():
+        assert getattr(new.spec, key) == value
+    assert new.spec.mounts[-1].target == "/data"
+    assert new.target != old.target
+
+
+def replacement_engine(monkeypatch, tmp_path, **features):
+    from support import configuration
+    from mimchine.domain import MachineObservation, RuntimeState
+    from mimchine.engines import get_engine
+
+    machine = make_machine(mounts=(MountSpec(tmp_path, "/data"),), **features)
+    data = json.loads(configuration(machine.spec))
+    engine = get_engine("podman")
+
+    def observe(target):
+        return MachineObservation(
+            target.target.container_id,
+            target.target.context,
+            target.binding.image_id,
+            target.binding.runtime,
+            target.labels,
+            RuntimeState.STOPPED,
+            json.dumps(data),
+        )
+
+    monkeypatch.setattr(engine, "_observe_target", observe)
+    monkeypatch.setattr(engine, "_image_metadata", lambda image: {"Config": {}})
+    monkeypatch.setattr(engine, "_gpu_args", lambda: ())
+    monkeypatch.setattr(engine, "_job_limits_args", lambda spec: ())
+    return engine, machine, data
+
+
+@pytest.mark.parametrize(
+    "features",
+    [
+        {"gpu": True},
+        {"job_limits": True},
+        {"container_args": ("--volume=/host:/extra:ro",)},
+    ],
+)
+def test_replacement_checks_replayed_feature_binds(monkeypatch, tmp_path, features):
+    engine, machine, data = replacement_engine(monkeypatch, tmp_path, **features)
+    extra = {"Type": "bind", "Source": "/host", "Destination": "/extra", "RW": False}
+    data["mounts"].append(extra)
+    engine.prepare_replacement(machine, desired=machine.spec)
+    engine.verify_replacement(machine, before=machine)
+    desired = replace(
+        machine.spec, mounts=(*machine.spec.mounts, MountSpec(tmp_path, "/extra"))
+    )
+    with pytest.raises(ValueError, match="conflicts"):
+        engine.prepare_replacement(machine, desired=desired)
+
+
+@pytest.mark.parametrize("kind", ["volume", "tmpfs"])
+def test_replacement_rejects_non_bind_storage_even_with_raw_args(
+    monkeypatch, tmp_path, kind
+):
+    engine, machine, data = replacement_engine(
+        monkeypatch, tmp_path, container_args=("--cap-drop=all",)
+    )
+    data["mounts"].append({"Type": kind, "Destination": "/extra"})
+    with pytest.raises(ValueError, match="volumes"):
+        engine.prepare_replacement(machine, desired=machine.spec)
+
+
+@pytest.mark.parametrize("change", ["missing", "source", "mode", "devices"])
+def test_replacement_refuses_changed_feature_bindings(monkeypatch, tmp_path, change):
+    engine, before, data = replacement_engine(monkeypatch, tmp_path, gpu=True)
+    data["mounts"].append(
+        {"Type": "bind", "Source": "/driver", "Destination": "/driver", "RW": False}
+    )
+    original_observe = engine._observe_target
+    original = original_observe(before)
+    candidate = replace(before, spec=replace(before.spec, shell="bash"))
+    monkeypatch.setattr(
+        engine,
+        "_observe_target",
+        lambda target: original if target is before else original_observe(target),
+    )
+    if change == "missing":
+        data["mounts"].pop()
+    elif change == "source":
+        data["mounts"][-1]["Source"] = "/other-driver"
+    elif change == "mode":
+        data["mounts"][-1]["RW"] = True
+    else:
+        data["boundary"] = {"devices": [{"PathOnHost": "/dev/other"}]}
+    with pytest.raises(ValueError, match="differ from original"):
+        engine.verify_replacement(candidate, before=before)
+
+
+def test_replacement_allocation_replays_features_and_raw_arguments(
+    monkeypatch, tmp_path
+):
+    from uuid import uuid4
+    from support import IMAGE_ID, RecordingProcessRunner
+    from mimchine.domain import RootfsImage
+    from mimchine.engines import get_engine
+
+    process = RecordingProcessRunner()
+    engine = get_engine("podman", process)
+    monkeypatch.setattr(engine, "_gpu_args", lambda: ("--device=/dev/test-gpu",))
+    monkeypatch.setattr(
+        engine,
+        "_job_limits_args",
+        lambda spec: ("--cgroupns=private", "-v", "/helper:/mim/limit:ro"),
+    )
+    token = str(uuid4())
+    machine = replace(
+        make_machine(
+            gpu=True,
+            job_limits=True,
+            container_args=("--cap-drop=all",),
+            mounts=(MountSpec(tmp_path, "/data"),),
+        ),
+        generation=token,
+        binding=None,
+        operation=Operation.CREATING,
+        creation_context=make_machine().target.context,
+        rootfs=RootfsImage(IMAGE_ID, token, "crun", ("--user", "1001:1002")),
+    )
+    engine.allocate(machine)
+    command = next(call for call in process.calls if "create" in call)
+    for value in (
+        "--device=/dev/test-gpu",
+        "--cgroupns=private",
+        "/helper:/mim/limit:ro",
+        "--cap-drop=all",
+        f"{tmp_path}:/data:rw",
+        IMAGE_ID,
+    ):
+        assert value in command
+    assert command[command.index("--user") + 1] == "1001:1002"
+    assert command[command.index("--runtime") + 1] == "crun"

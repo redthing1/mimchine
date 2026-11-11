@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from uuid import UUID
 
-from ..domain import Machine, RootfsImage, RuntimeState, verify_observation
+from ..domain import Machine, MachineSpec, RootfsImage, RuntimeState, verify_observation
 from ..process import ProcessError
 
 
@@ -48,41 +48,88 @@ class UpdateEngineMixin:
             raise ValueError("invalid image metadata response")
         return values[0]
 
-    def prepare_replacement(self, machine: Machine) -> None:
-        observed = self._observe_target(machine)
-        if observed.state not in {RuntimeState.RUNNING, RuntimeState.STOPPED}:
-            raise ValueError("replacement requires a running or stopped machine")
-        data = json.loads(observed.configuration)
+    def _replacement_mounts(self, machine: Machine, data: dict) -> dict:
+        """Validate declared mounts and return additional binds."""
         expected = {m.target: m for m in machine.spec.mounts}
         found = set()
+        extra = {}
         for mount in data["mounts"]:
             destination = mount["Destination"]
-            if destination not in expected or mount.get("Type", "bind") != "bind":
+            if mount.get("Type", "bind") != "bind":
                 raise ValueError(
-                    "replacement cannot preserve unmanaged or named volumes"
+                    "replacement requires bind mounts; volumes and tmpfs are unsupported"
                 )
+            if destination not in expected:
+                if not (
+                    machine.spec.container_args
+                    or machine.spec.gpu
+                    or machine.spec.job_limits
+                ):
+                    raise ValueError("replacement cannot preserve unmanaged mounts")
+                extra[destination] = (
+                    mount["Source"],
+                    mount.get("RW"),
+                    mount.get("Propagation"),
+                    sorted(mount.get("Options") or []),
+                )
+                continue
             wanted = expected[destination]
-            if (
-                mount["Source"] != str(wanted.source)
-                or mount.get("RW") != (not wanted.read_only)
+            if mount["Source"] != str(wanted.source) or mount.get("RW") != (
+                not wanted.read_only
             ):
                 raise ValueError("actual mount differs from saved settings")
             found.add(destination)
         if found != expected.keys():
             raise ValueError("actual mounts differ from saved settings")
+        return extra
+
+    def prepare_replacement(
+        self, machine: Machine, *, desired: MachineSpec | None = None
+    ) -> None:
+        observed = self._observe_target(machine)
+        if observed.state not in {RuntimeState.RUNNING, RuntimeState.STOPPED}:
+            raise ValueError("replacement requires a running or stopped machine")
+        data = json.loads(observed.configuration)
+        extra = self._replacement_mounts(machine, data)
+        self._replacement_settings(machine, data)
+        if desired is not None:
+            for mount in desired.mounts:
+                if mount.target in extra:
+                    raise ValueError(
+                        f"mount destination {mount.target} conflicts with container arguments or features"
+                    )
+            # Check feature prerequisites before stopping.
+            if desired.gpu:
+                self._gpu_args()
+            if desired.job_limits:
+                self._job_limits_args(desired)
         self._import_changes(machine, token="validation")
 
-    def verify_replacement(self, machine: Machine) -> None:
+    def verify_replacement(self, machine: Machine, *, before: Machine) -> None:
         self.prepare_replacement(machine)
         observed = self._observe_target(machine)
         data = json.loads(observed.configuration)
+        original = json.loads(self._observe_target(before).configuration)
+        if self._replacement_mounts(machine, data) != self._replacement_mounts(
+            before, original
+        ):
+            raise ValueError(
+                "replacement bind mounts differ from original"
+            )
+        if (data.get("boundary") or {}).get("devices") != (
+            original.get("boundary") or {}
+        ).get("devices"):
+            raise ValueError("replacement devices differ from original")
+        self._replacement_settings(machine, data)
+
+    def _replacement_settings(self, machine: Machine, data: dict) -> None:
         actual = sorted(
             (item.get("HostIp") or "0.0.0.0", int(item["HostPort"]), guest)
             for guest, values in data["ports"].items()
             for item in values or []
         )
         wanted = sorted(
-            (p.address or "127.0.0.1", p.host, f"{p.guest}/{p.protocol}")
+            (p.address or "0.0.0.0", p.host, f"{p.guest}/{p.protocol}")
             for p in machine.spec.ports
         )
         if actual != wanted:

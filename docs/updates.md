@@ -21,10 +21,10 @@ not reserve ports.
 | Resource ceilings | Updates in place; clearing a CPU or memory ceiling requires replacement |
 | Mounts, ports, environment, working directory | Replaces the container |
 
-A running replacement requires `--restart`, permitting interruption of sessions.
-Stopped machines stay stopped. For an in-place change, `--restart` does not force
-a restart. Native Podman and Docker support these updates; gVisor supports only
-shell changes.
+A running replacement requires `--restart` to interrupt sessions. Otherwise,
+stop the machine before applying it. Stopped machines stay stopped; in-place
+changes do not restart. Native Podman and Docker support these updates; gVisor
+supports only shell changes.
 
 ## Set or remove a value
 
@@ -55,14 +55,18 @@ are not guaranteed.
 Allow temporary disk space for a full filesystem copy. Mim removes obsolete
 private images after replacement and the active image on deletion.
 
-Replacement has these configuration requirements:
+Replacement preserves GPU forwarding, command job limits and raw container
+arguments. Use Mim options to change mounts, ports, environment and working
+directory.
 
-- Mounts must be bind mounts declared through Mim. The machine cannot use raw
-  container arguments, GPU forwarding, command job limits or SSH-agent forwarding.
-- Its image must have no declared volumes, healthchecks, ONBUILD instructions
-  or multiline configuration values.
-- Port mappings must have explicit addresses. Remove or replace older mappings
-  with an omitted address in the update.
+Replacement requires:
+
+- Bind mounts with destinations that do not conflict with raw arguments or features.
+- No SSH-agent forwarding.
+- An image without declared volumes, healthchecks, ONBUILD instructions or
+  multiline configuration values.
+- Explicit port addresses. Remove or replace rules with omitted addresses in
+  the same update.
 
 Runner, image, identity and isolation changes are outside this command's scope.
 
